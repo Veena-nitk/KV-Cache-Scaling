@@ -85,7 +85,7 @@ class PageContent:
 
         footer_stream.append("q 0.5 0.5 0.5 rg")
         footer_stream.append("0.4 w 54 45 m 558 45 l S")
-        footer_stream.append("BT /F1 8 Tf 54 34 Td (Veena Shivakumar | National Institute of Technology Karnataka | Qwen2.5-1.5B on T4) Tj ET")
+        footer_stream.append("BT /F1 8 Tf 54 34 Td (Devansh Sharma, Veena S | NITK Surathkal | Qwen2.5-1.5B on T4) Tj ET")
         pg_str = f"Page {self.page_num} of {total_pages}"
         pg_w = string_width(pg_str, 8, False, False)
         footer_stream.append(f"BT /F1 8 Tf {558 - pg_w:.1f} 34 Td ({pg_str}) Tj ET")
@@ -364,7 +364,7 @@ def build_full_report():
         title="KV-Cache Memory Scaling & OOM Boundary Characterization",
         subtitle="An Empirical & Analytical Investigation of Qwen2.5-1.5B (GQA) on NVIDIA Tesla T4",
         meta_items=[
-            "Author: Veena Shivakumar",
+            "Authors: Devansh Sharma, Veena S",
             "Affiliation: Dept. of CSE, NITK Surathkal",
             "Date: November 2026",
             "Status: Final Research Delivery"
