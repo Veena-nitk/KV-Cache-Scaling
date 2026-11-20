@@ -1,0 +1,7 @@
+{
+  "status": "COMPLETE_PREREGISTRATION_RECEIPT",
+  "experiment_id": "957e67f5-a522-49be-94ef-d8be6e3911a7",
+  "prediction_path": "prereg/bisect-2026-10-28/prediction.json",
+  "persistent_state_root": "/content/kvcache-bisect-state",
+  "registered_gpu_uuid": "GPU-bf1116ef-57c5-9ec1-593e-0a24bd1339d7"
+}

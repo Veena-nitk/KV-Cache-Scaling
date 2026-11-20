@@ -1,0 +1,34 @@
+{
+  "status": "DRAFT_PREREGISTRATION_RECEIPT",
+  "prediction_path": "prereg/bisect-2026-10-28/prediction.json",
+  "prediction_commit_sha": "<TO_BE_FILLED_ON_COMMIT>",
+  "remote_commit_url": "https://github.com/DevanshSharma351/KV-Cache-Scaling/commit/<COMMIT_SHA>",
+  "remote_receipt_evidence_url": "https://github.com/DevanshSharma351/KV-Cache-Scaling/blob/<COMMIT_SHA>/prereg/bisect-2026-10-28/prediction.json",
+  "remote_receipt_observed_at_utc": null,
+  "protocol_sha256": "7198d509c816c58c36a1e16f62a325d3ec4a2a6cb3c8a249d8b1ac10add31f1b",
+  "config_sha256": "0e8c8aa86468aba09c9d32157ff4bc2301c7e6c50e4398960425b2ea71e66f77",
+  "reviewers": [
+    {
+      "role": "Person 1",
+      "reviewed_at_utc": "2026-10-28T02:00:00+00:00",
+      "performed_by": "Codex acting on behalf of Person 1",
+      "authorization": "User explicitly delegated the technical review. Not independent human review.",
+      "review_path": "prereg/bisect-2026-10-28/REVIEW.md"
+    }
+  ],
+  "first_model_measurement_at_utc": null,
+  "note": "Prospective paired-allocator bisection amendment. Deliberate OOM budget: 6 per allocator, 12 total. Range [114688, 131072] down to <=512 tokens. 3 anchor repeats at 114688. Same Colab session / GPU UUID for both allocators. Drive disconnected.",
+  "prediction_sha256": "<COMPUTED_ON_COMMIT>",
+  "experiment_id": "f7e70d3a-ae47-402e-ad10-f10acb235995",
+  "persistent_state_root": "/content/kvcache-checkpoint-staging",
+  "remote_branch": "main",
+  "storage_policy": {
+    "colab_path_kind": "ephemeral checkpoint staging",
+    "actual_durable_location": "User local filesystem; complete capsule verified and fsynced before each next point",
+    "required_flags": [
+      "--checkpoint-each-probe"
+    ],
+    "bulk_authorized_with_this_storage": true,
+    "unattended_bulk_authorized": false
+  }
+}

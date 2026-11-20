@@ -1,0 +1,15 @@
+{
+  "gpu_uuid": "GPU-bf1116ef-57c5-9ec1-593e-0a24bd1339d7",
+  "default": {
+    "last_success": 118784,
+    "first_cuda_oom": 119296,
+    "gap": 512
+  },
+  "expandable": {
+    "last_success": 127488,
+    "first_cuda_oom": 128000,
+    "gap": 512
+  },
+  "expandable_delta_tokens": 8704,
+  "expandable_delta_percent": 7.327586206896552
+}

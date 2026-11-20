@@ -1,0 +1,25 @@
+allocator,length_tokens,probe_id,row,bytes,MiB,role,source_evidence
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,unique_weight_difference,0,0.000000,component,Deduplicated parameter storage vs config-derived weights
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,loaded_model_buffer_storage,256,0.000244,component,Unique loaded model storage excluding parameters
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,postload_allocator_internal_padding,917760,0.875244,component,Same-snapshot allocated minus requested bytes
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,unaccounted_postload_storage,0,0.000000,component,Unclassified post-load allocation; not assumed to be framework overhead
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,controlled_cublas_workspace,8519680,8.125000,component,"Source-supported fixed-size inference from same-allocator L=512 controls; not a direct intervention at this length; pinned PyTorch 2.6 fixed non-Hopper workspace; controls: 258f7320-7005-421e-a768-900f82727dcc,84065451-393c-4ffa-9aea-3e0385da962d,ab101abe-710e-4861-88c9-f7fa22042a87"
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,unaccounted_postforward_persistent_growth,0,0.000000,component,Measured released-minus-postload allocation; physical cause unconfirmed
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,cache_lifetime_difference,0,0.000000,component,Controlled cache release delta minus analytical retained KV
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,output_and_input_lifetime,2139136,2.040039,component,Controlled output/input release delta
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,transient_envelope_difference,-1350870016,-1288.290039,component,"Exact peak excess above synchronized endpoint minus assumed envelope; descriptive, not pure-activation attribution"
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,Unaccounted,0,0.000000,arithmetic residual; not a causal attribution,Preserved signed gap less sum of signed component rows. Zero means arithmetic closure only.
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,Total gap (measured - predicted),-1339293184,-1277.249512,total,Measured peak 14020668928 B minus central tensor prediction 15359962112 B
+default,114688,5de4f220-242d-441c-985a-9cb69cfa2780,Closure check (sum components + Unaccounted - total gap),0,0.000000,closure,Must equal zero
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,unique_weight_difference,0,0.000000,component,Deduplicated parameter storage vs config-derived weights
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,loaded_model_buffer_storage,256,0.000244,component,Unique loaded model storage excluding parameters
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,postload_allocator_internal_padding,256,0.000244,component,Same-snapshot allocated minus requested bytes
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,unaccounted_postload_storage,0,0.000000,component,Unclassified post-load allocation; not assumed to be framework overhead
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,controlled_cublas_workspace,8519680,8.125000,component,"Source-supported fixed-size inference from same-allocator L=512 controls; not a direct intervention at this length; pinned PyTorch 2.6 fixed non-Hopper workspace; controls: 0b2ca818-ad88-40d2-9606-abc4febdfe5c,caec2e96-fd03-4746-8bc0-4bb477751b53,d1676bcf-072b-4814-990a-4ce22264e20e"
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,unaccounted_postforward_persistent_growth,0,0.000000,component,Measured released-minus-postload allocation; physical cause unconfirmed
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,cache_lifetime_difference,0,0.000000,component,Controlled cache release delta minus analytical retained KV
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,output_and_input_lifetime,2139136,2.040039,component,Controlled output/input release delta
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,transient_envelope_difference,-1350870016,-1288.290039,component,"Exact peak excess above synchronized endpoint minus assumed envelope; descriptive, not pure-activation attribution"
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,Unaccounted,0,0.000000,arithmetic residual; not a causal attribution,Preserved signed gap less sum of signed component rows. Zero means arithmetic closure only.
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,Total gap (measured - predicted),-1340210688,-1278.124512,total,Measured peak 14019751424 B minus central tensor prediction 15359962112 B
+expandable,114688,9a193cc4-9884-42b1-a6d3-176826691deb,Closure check (sum components + Unaccounted - total gap),0,0.000000,closure,Must equal zero

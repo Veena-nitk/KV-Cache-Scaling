@@ -1,0 +1,18 @@
+{
+  "schema_version": "preregistration-amendment-v1",
+  "experiment_id": "957e67f5-a522-49be-94ef-d8be6e3911a7",
+  "context_inventory_path": "prereg/bisect-2026-10-28/context-inventory.json",
+  "gpu_prediction": {
+    "central_limit_tokens": 111232
+  },
+  "acceptance_policy": {
+    "anchor_length": 114688,
+    "anchor_repeats": 3,
+    "confirmation_upper_length": 131072,
+    "resolution_tokens": 512,
+    "max_oom_count_per_allocator": 6,
+    "max_oom_count_total": 12
+  },
+  "gpu_measurements_authorized": false,
+  "input_sha256": {}
+}

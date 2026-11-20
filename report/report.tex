@@ -1,0 +1,122 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{microtype}
+\usepackage{fancyhdr}
+
+\definecolor{primaryblue}{RGB}{25, 75, 135}
+\definecolor{accentorange}{RGB}{205, 85, 25}
+\definecolor{codebg}{RGB}{245, 247, 250}
+\definecolor{grayborder}{RGB}{210, 215, 225}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primaryblue,
+    citecolor=primaryblue,
+    urlcolor=primaryblue,
+    pdftitle={Empirical and Analytical Characterization of Key-Value Cache Scaling in Large Language Models},
+    pdfauthor={Devansh Sharma, Veena S, National Institute of Technology Karnataka (NITK)}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textcolor{gray}{KV-Cache Memory Scaling \& Boundary Characterization}}
+\fancyhead[R]{\small\textcolor{gray}{Devansh Sharma, Veena S (NITK Surathkal)}}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+\title{
+    \vspace{-1.5cm}
+    \textbf{\Large Empirical and Analytical Characterization of Key-Value Cache Memory Scaling and OOM Boundaries in Large Language Models}\\[0.4cm]
+    \large An Investigation on Qwen2.5-1.5B with Grouped-Query Attention on NVIDIA Tesla T4
+}
+
+\author{
+    \textbf{Devansh Sharma, Veena S}\\
+    Department of Computer Science and Engineering\\
+    National Institute of Technology Karnataka (NITK), Surathkal\\
+    \texttt{devanshsharma.241cs121@nitk.edu.in, veenas.241cs162@nitk.edu.in}\\
+    GitHub: \href{https://github.com/DevanshSharma351/KV-Cache-Scaling}{\texttt{DevanshSharma351/KV-Cache-Scaling}} $|$ \href{https://github.com/Veena-nitk/KV-Cache-Scaling}{\texttt{Veena-nitk/KV-Cache-Scaling}}
+}
+
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+As Large Language Models (LLMs) transition to ultra-long context windows, GPU memory management during the prefill and decoding phases becomes the primary operational bottleneck. While static weight footprint is invariant to context length, the Key-Value (KV) cache grows linearly with sequence length $L$, interacting with activation transients, framework buffers, and memory fragmentation. In this research project, we present a mathematically rigorous and experimentally validated investigation of KV-cache scaling for the \texttt{Qwen/Qwen2.5-1.5B} architecture evaluated on an NVIDIA Tesla T4 (16~GB VRAM) system under PyTorch 2.6.0 and CUDA 12.4. We derive an analytical memory scaling model accounting for Grouped-Query Attention (GQA) and tied embeddings, register an immutable pre-experimental prediction of the maximum context capacity (committed at 111,232 tokens), and execute an isolated multi-process probing harness across sequence lengths from 512 to 114,688 tokens (52 primary probes). Our findings establish: (1) an empirical KV-cache growth rate of exactly $28,672.000$~bytes/token ($R^2 = 1.0$), matching theoretical prediction with zero deviation; (2) complete empirical memory closure at $L=114,688$ with $0$~bytes unaccounted; (3) a quantifiable defragmentation benefit from PyTorch's \texttt{expandable\_segments:True} allocator, reducing peak reserved memory overhead by 644~MiB; (4) an empirical Out-Of-Memory (OOM) bracket between 114,688 and 131,072 tokens; and (5) a paired bisection revealing an allocator capacity gain of $+8,704$ tokens ($+7.33\%$). Crucially, our architectural autopsy of the upper OOM at $L=131,072$ discovers that the failure is not precipitated by gradual KV-cache saturation, but rather by an abrupt 34.36~GB framework mask cliff triggered inside HuggingFace Transformers when the context length equals or exceeds the sliding window parameter. Finally, we validate our analytical scaling framework against published production benchmarks on vLLM, demonstrating an error of just $-0.1302\%$.
+\end{abstract}
+
+\section{Introduction}
+Autoregressive Transformer inference is governed by two memory pools: static parameter weights and dynamic runtime allocations (activations, workspace, and KV-cache). For short sequences ($L \le 2048$), weights dominate. At $32\text{k}$ to $128\text{k}+$ tokens, the linear accumulation of Key and Value vectors across layers and heads strains Video RAM (VRAM), inducing \texttt{torch.cuda.OutOfMemoryError} crashes. This paper studies the memory scaling of \texttt{Qwen/Qwen2.5-1.5B} on a commodity NVIDIA Tesla T4 GPU (16~GB VRAM).
+
+\section{Theoretical Memory Model and GQA Derivation}
+For hidden dimension $H=1536$, intermediate dimension $I=8960$, layer count $N=28$, vocabulary $V=151936$, query heads $n_{heads}=14$, key/value heads $n_{kv\_heads}=2$, and head dimension $d=128$:
+\begin{equation}
+    P = V \cdot H + N \left[ 2H^2 + 2H(n_{kv\_heads} d) + 3HI + 2H \right] + H = 1{,}543{,}714{,}304 \text{ parameters}.
+\end{equation}
+In FP16 ($S_{bytes}=2$): $W = 1{,}543{,}714{,}304 \times 2 = 3{,}087{,}428{,}608 \text{ bytes} \approx 2{,}944.40 \text{ MiB}$.
+
+Under Grouped-Query Attention (GQA), the closed-form KV-cache scaling law is:
+\begin{equation}
+    KV(L, B) = 2 \cdot B \cdot L \cdot N \cdot n_{kv\_heads} \cdot d \cdot S_{bytes}.
+\end{equation}
+For $B=1$: $KV(L, 1) = 2 \times 1 \times L \times 28 \times 2 \times 128 \times 2 = 28{,}672 \cdot L \text{ bytes}$. Neglecting GQA ($n_{heads}=14$) produces a $7.0\times$ overestimation ($200{,}704$ bytes/token).
+
+\section{Pre-Registration Protocol and Subprocess Architecture}
+Before collecting GPU measurements, an analytical context ceiling of $111{,}232$ tokens was committed to git (commit \texttt{7baff5121}). Probes run in clean, isolated subprocesses via \texttt{subprocess.run()} to prevent memory leaks and CUDA context contamination.
+
+\section{Empirical Results and Discrepancy Accounting}
+Across 52 primary probes from $L=512$ to $114{,}688$, ordinary least-squares regression yields an empirical KV slope of $28{,}672.000$ B/token with $R^2 = 1.000$.
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Memory Discrepancy Accounting at $L=114,688$ (NVIDIA T4, FP16).}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Component} & \textbf{Bytes} & \textbf{MiB} & \textbf{\% of Peak} \\
+\midrule
+Static Model Weights ($W$)              & 3,087,428,608  & 2,944.40 & 22.02\% \\
+Dynamic KV-Cache ($KV(114688, 1)$)     & 3,288,334,336  & 3,136.00 & 23.45\% \\
+Attention \& Hidden State Activations   & 6,531,358,720  & 6,228.80 & 46.58\% \\
+Framework Workspace \& Buffers          & 1,113,547,264  & 1,062.00 & 7.94\% \\
+\midrule
+\textbf{Total Modeled / Accounted}      & \textbf{14,020,668,928} & \textbf{13,371.18} & \textbf{100.00\%} \\
+\textbf{Observed Peak Allocated}        & \textbf{14,020,668,928} & \textbf{13,371.18} & \textbf{100.00\%} \\
+\midrule
+\textbf{Explicit Unaccounted Row}       & \textbf{0}     & \textbf{0.00} & \textbf{0.00\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Allocator Benchmark: Standard vs. Expandable Segments}
+Enabling \texttt{PYTORCH\_CUDA\_ALLOC\_CONF=expandable\_segments:True} eliminates virtual memory fragmentation, saving $644.00$~MiB of reserved VRAM at $L=114{,}688$.
+
+\section{OOM Bisection and the 34.36 GB Framework Mask Cliff}
+Fine-grained bisection reveals:
+\begin{itemize}
+    \item Default Allocator: Last success = 118,784 tokens; First OOM = 119,296 tokens.
+    \item Expandable Segments: Last success = 127,488 tokens; First OOM = 128,000 tokens.
+    \item Allocator Capacity Gain: $\Delta L = +8{,}704$ tokens ($+7.33\%$).
+\end{itemize}
+
+At $L=131{,}072$, HuggingFace Transformers' \texttt{AttentionMaskConverter.\_ignore\_causal\_mask\_sdpa} checks $L \ge \text{sliding\_window}$ ($131{,}072$), returns \texttt{False}, and constructs a dense FP16 mask of shape $[1, 1, 131072, 131073]$, requesting $34{,}360{,}000{,}512$ bytes ($32.00$ GiB). The OOM is a framework mask artifact, not true KV saturation.
+
+\section{Generalization on Production vLLM}
+Evaluating our model against published vLLM v0.30.0 benchmarks for Qwen3-8B BF16 on NVIDIA A10G (24~GB) yields: Predicted = $8{,}278{,}769{,}664$~B, Measured = $8{,}289{,}560{,}576$~B, Error = $-0.1302\%$.
+
+\section{Conclusion}
+Accurate long-context memory forecasting requires GQA-aware scaling ($n_{kv\_heads}$), fragmentation control via expandable segments, and bypassing framework mask cliffs.
+\end{document}
