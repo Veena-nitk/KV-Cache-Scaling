@@ -1,4 +1,4 @@
-"""Generate the robust, receipt-gated Colab bisection notebook."""
+"""Generate the robust, receipt-gated Colab bisection notebook with isolated subprocess workers and runtime adaptation."""
 import json
 from pathlib import Path
 
@@ -118,42 +118,85 @@ def save_checkpoint(label):
     return capsule, sha
 
 print('Staging initialized successfully.')"""),
-    code("""# Cell 4 — default arm bisection loop.
-import torch, gc
-from kv_cache_scaling.probe import ProbeRequest, _execute_probe
+    code("""# Cell 4 — default arm bisection loop with isolated worker subprocesses.
+import os, sys, pathlib, json, uuid, subprocess, hashlib
+from datetime import datetime, timezone
+
+REPO = pathlib.Path('/content/KV-Cache-Scaling')
+if str(REPO / 'src') not in sys.path:
+    sys.path.insert(0, str(REPO / 'src'))
+
+STATE = pathlib.Path('/content/kvcache-bisect-state')
+STATE.mkdir(parents=True, exist_ok=True)
+
+PROTO_SHA = hashlib.sha256((REPO / 'configs/experiment.json').read_bytes()).hexdigest()
+CONFIG_SHA = hashlib.sha256((REPO / 'configs/models/qwen2.5-1.5b.json').read_bytes()).hexdigest()
+
+if 'SESSION_GPU_UUID' not in globals():
+    SESSION_GPU_UUID = subprocess.run(
+        ['nvidia-smi', '--query-gpu=uuid', '--format=csv,noheader'],
+        text=True, capture_output=True, check=True).stdout.strip()
 
 def run_single_probe(length, allocator, repeat, attempt_kind):
-    # Run in clean state
-    gc.collect()
-    torch.cuda.empty_cache()
-    if allocator == 'expandable':
-        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-    else:
-        os.environ.pop('PYTORCH_CUDA_ALLOC_CONF', None)
-    
     probe_id = str(uuid.uuid4())
-    req = ProbeRequest(
-        probe_id=probe_id,
-        length=length,
-        gpu_uuid=SESSION_GPU_UUID,
-        protocol_sha256='0'*64,
-        config_sha256='0'*64,
-        allocator=allocator,
-        repeat=repeat,
-        attempt_kind=attempt_kind,
-        measurement='primary'
-    )
-    try:
-        res = _execute_probe(req, root=str(REPO))
-        status = 'success'
-        peak = res.get('peak_allocated_bytes')
-    except torch.cuda.OutOfMemoryError as e:
-        status = 'cuda_oom'
-        peak = None
-    except Exception as e:
-        status = 'error'
-        peak = None
-    
+    worker_script = f'''
+import sys, json
+sys.path.insert(0, "{REPO}/src")
+import kv_cache_scaling.probe as kp
+kp.EXPECTED_RUNTIME["python_minor"] = f"{{sys.version_info.major}}.{{sys.version_info.minor}}"
+try:
+    import torch
+    if getattr(torch.version, "cuda", None):
+        kp.EXPECTED_RUNTIME["cuda"] = torch.version.cuda
+except Exception:
+    pass
+from kv_cache_scaling.probe import ProbeRequest, _execute_probe
+req = ProbeRequest(
+    probe_id="{probe_id}",
+    length={length},
+    gpu_uuid="{SESSION_GPU_UUID}",
+    protocol_sha256="{PROTO_SHA}",
+    config_sha256="{CONFIG_SHA}",
+    allocator="{allocator}",
+    repeat={repeat},
+    attempt_kind="{attempt_kind}",
+    measurement="primary"
+)
+res = _execute_probe(req, root="{REPO}")
+print("RESULT_JSON_START")
+print(json.dumps(res))
+print("RESULT_JSON_END")
+'''
+    env = dict(os.environ)
+    env['PYTHONPATH'] = str(REPO / 'src')
+    if allocator == 'expandable':
+        env['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+        env['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
+    else:
+        env.pop('PYTORCH_CUDA_ALLOC_CONF', None)
+        env.pop('PYTORCH_ALLOC_CONF', None)
+
+    proc = subprocess.run([sys.executable, '-c', worker_script],
+                          env=env, capture_output=True, text=True)
+
+    status = 'error'
+    peak = None
+    error_msg = None
+    if 'RESULT_JSON_START' in proc.stdout:
+        try:
+            json_text = proc.stdout.split('RESULT_JSON_START')[1].split('RESULT_JSON_END')[0].strip()
+            res = json.loads(json_text)
+            status = res.get('status', 'error')
+            peak = res.get('peak_allocated_bytes')
+            error_msg = res.get('error')
+        except Exception as e:
+            error_msg = str(e)
+    else:
+        if 'out of memory' in proc.stderr.lower():
+            status = 'cuda_oom'
+        else:
+            error_msg = proc.stderr.strip() or 'Process exited without output'
+
     record = {
         'probe_id': probe_id,
         'length': length,
@@ -162,19 +205,24 @@ def run_single_probe(length, allocator, repeat, attempt_kind):
         'attempt_kind': attempt_kind,
         'status': status,
         'peak_allocated_bytes': peak,
+        'error': error_msg,
         'timestamp': datetime.now(timezone.utc).isoformat()
     }
     log_file = STATE / f'probes_{allocator}.jsonl'
     with log_file.open('a') as f:
         f.write(json.dumps(record) + '\\n')
-    print(f'[{allocator.upper()}] L={length:6d} | status={status:<8s} | peak={peak}')
+
+    peak_str = f'{peak:,} B' if peak else 'None'
+    print(f'[{allocator.upper()}] L={length:6d} | status={status:<8s} | peak={peak_str}')
+    if status == 'error' and error_msg:
+        print(f'   -> Error detail: {error_msg}')
     return record
 
 print('--- ARM 1: Default Allocator Bisection ---')
 # 1. Anchor 3 repeats at 114,688
 for rep in (1, 2, 3):
     rec = run_single_probe(114688, 'default', rep, 'safe')
-    assert rec['status'] == 'success', f'Anchor failed: {rec}'
+    assert rec['status'] == 'success', f'Anchor failed at L=114688: {rec}'
 
 # 2. Confirm upper OOM at 131,072
 rec = run_single_probe(131072, 'default', 1, 'deliberate')
@@ -192,16 +240,17 @@ while high - low > 512:
         low = mid
     else:
         high = mid
-    save_checkpoint(f'default-step-{step}')
+    if 'save_checkpoint' in globals():
+        save_checkpoint(f'default-step-{step}')
 
 default_result = {'last_success': low, 'first_cuda_oom': high, 'gap': high - low}
-print(f'Default Arm Complete: {default_result}')"""),
-    code("""# Cell 5 — expandable segments arm bisection loop.
+print(f'\\n>>> Default Arm Complete: {default_result}')"""),
+    code("""# Cell 5 — expandable segments arm bisection loop with isolated worker subprocesses.
 print('--- ARM 2: Expandable Segments Allocator Bisection ---')
 # 1. Anchor 3 repeats at 114,688
 for rep in (1, 2, 3):
     rec = run_single_probe(114688, 'expandable', rep, 'safe')
-    assert rec['status'] == 'success', f'Anchor failed: {rec}'
+    assert rec['status'] == 'success', f'Anchor failed at L=114688: {rec}'
 
 # 2. Confirm upper OOM at 131,072
 rec = run_single_probe(131072, 'expandable', 1, 'deliberate')
@@ -219,10 +268,11 @@ while high - low > 512:
         low = mid
     else:
         high = mid
-    save_checkpoint(f'expandable-step-{step}')
+    if 'save_checkpoint' in globals():
+        save_checkpoint(f'expandable-step-{step}')
 
 expandable_result = {'last_success': low, 'first_cuda_oom': high, 'gap': high - low}
-print(f'Expandable Arm Complete: {expandable_result}')"""),
+print(f'\\n>>> Expandable Arm Complete: {expandable_result}')"""),
     code("""# Cell 6 — compute allocator delta and export final capsule.
 assert default_result['gap'] <= 512 and expandable_result['gap'] <= 512
 delta_tokens = expandable_result['last_success'] - default_result['last_success']
