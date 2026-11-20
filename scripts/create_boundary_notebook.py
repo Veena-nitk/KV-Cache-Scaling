@@ -1,4 +1,4 @@
-"""Generate the robust, receipt-gated Colab bisection notebook with isolated subprocess workers and runtime adaptation."""
+"""Generate the robust, receipt-gated Colab bisection notebook with isolated subprocess workers, runtime adaptation, and torchvision shielding."""
 import json
 from pathlib import Path
 
@@ -43,6 +43,7 @@ SESSION_GPU_UUID = gpu_row.split(',')[0].strip()
 print('Physical GPU:', gpu_row)
 
 # Install the pinned CUDA 12.4 stack before importing torch.
+subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y', 'torchvision', 'torchaudio'], capture_output=True)
 subprocess.run([sys.executable, '-m', 'pip', 'install', 'torch==2.6.0',
                 '--index-url', 'https://download.pytorch.org/whl/cu124'], check=True)
 subprocess.run([sys.executable, '-m', 'pip', 'install', '-r', 'requirements-gpu.txt'], check=True)
@@ -118,9 +119,12 @@ def save_checkpoint(label):
     return capsule, sha
 
 print('Staging initialized successfully.')"""),
-    code("""# Cell 4 — default arm bisection loop with isolated worker subprocesses.
+    code("""# Cell 4 — default arm bisection loop with isolated worker subprocesses and torchvision shielding.
 import os, sys, pathlib, json, uuid, subprocess, hashlib
 from datetime import datetime, timezone
+
+# Remove mismatched torchvision from Colab environment to prevent ABI conflict
+subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y', 'torchvision', 'torchaudio'], capture_output=True)
 
 REPO = pathlib.Path('/content/KV-Cache-Scaling')
 if str(REPO / 'src') not in sys.path:
@@ -140,7 +144,10 @@ if 'SESSION_GPU_UUID' not in globals():
 def run_single_probe(length, allocator, repeat, attempt_kind):
     probe_id = str(uuid.uuid4())
     worker_script = f'''
-import sys, json
+import sys
+sys.modules["torchvision"] = None
+sys.modules["torchvision.ops"] = None
+import json
 sys.path.insert(0, "{REPO}/src")
 import kv_cache_scaling.probe as kp
 kp.EXPECTED_RUNTIME["python_minor"] = f"{{sys.version_info.major}}.{{sys.version_info.minor}}"
@@ -150,6 +157,7 @@ try:
         kp.EXPECTED_RUNTIME["cuda"] = torch.version.cuda
 except Exception:
     pass
+
 from kv_cache_scaling.probe import ProbeRequest, _execute_probe
 req = ProbeRequest(
     probe_id="{probe_id}",
@@ -245,7 +253,7 @@ while high - low > 512:
 
 default_result = {'last_success': low, 'first_cuda_oom': high, 'gap': high - low}
 print(f'\\n>>> Default Arm Complete: {default_result}')"""),
-    code("""# Cell 5 — expandable segments arm bisection loop with isolated worker subprocesses.
+    code("""# Cell 5 — expandable segments arm bisection loop with isolated worker subprocesses and torchvision shielding.
 print('--- ARM 2: Expandable Segments Allocator Bisection ---')
 # 1. Anchor 3 repeats at 114,688
 for rep in (1, 2, 3):
