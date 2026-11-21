@@ -10,6 +10,7 @@ An empirical and analytical study of GPU memory during long-context prefill for 
 - **Affiliation** · Department of Computer Science and Engineering, National Institute of Technology Karnataka (NITK), Surathkal
 - **Repository** · [DevanshSharma351/KV-Cache-Scaling](https://github.com/DevanshSharma351/KV-Cache-Scaling)
 - **Academic report** · [Final report (PDF)](KV_Cache_Scaling_Final_Report.pdf)
+- **Assignment evidence** · [Deliverables and measurement limits](docs/ASSIGNMENT_COMPLETION.md)
 
 ---
 
@@ -111,7 +112,7 @@ The expandable arm sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` befor
 
 A targeted run on a separate T4 allocation completed a 114,688-token prefill and raised a typed forward CUDA OOM at 131,072 tokens. Under the monotone fit/failure assumption, these observations bracket the largest fitting integer context at **114,688–131,071 tokens**. [Boundary verification](artifacts/experiments/2026-10-21-boundary/verification.json)
 
-The submission branch implements a paired-bisection coordinator and Colab notebook. The coordinator checks the registered GPU UUID, schedules anchor probes and 512-token midpoint steps, and checkpoints each probe. [Coordinator](scripts/bisect_boundary.py) · [Boundary notebook](notebooks/BOUNDARY_COLAB.ipynb)
+The saved confirmation consumed the assignment’s one deliberate OOM. Both allocators reached the same 114,688-token success in the paired core sweep, a 0-token observed success delta. Their conservative safe-budget delta was bounded by −256 to +256 tokens. The expandable hardware-limit delta remains unmeasured. [Allocator comparison and evidence](docs/ASSIGNMENT_COMPLETION.md#paired-allocator-comparison-within-the-one-oom-budget)
 
 ### 2. Framework Mask Allocation at 131,072 Tokens
 
@@ -155,7 +156,7 @@ A published vLLM 0.30.0 benchmark for **Qwen3-8B BF16 on an NVIDIA A10G** report
 | CUDA probe, cache inspection and peak counters | [probe.py](src/kv_cache_scaling/probe.py) |
 | Allocator environment and subprocess launch | [processes.py](src/kv_cache_scaling/processes.py) |
 | Checkpointed measurement sweep | [sweep.py](src/kv_cache_scaling/sweep.py) · [coordinator store](src/kv_cache_scaling/coordinator_store.py) |
-| Paired-bisection tooling | [Coordinator](scripts/bisect_boundary.py) · [Unit tests](tests/test_bisect_boundary.py) |
+| One-use boundary confirmation | [Targeted coordinator](scripts/targeted_boundary.py) · [Saved verification](artifacts/experiments/2026-10-21-boundary/verification.json) |
 | Signed discrepancy data | [114,688-token comparison](docs/DISCREPANCY_114688.csv) · [Primary discrepancy data](data/processed/project-results/discrepancy.csv) |
 | Figures and analysis | [Scientific figures](artifacts/figures/project-results/) · [Processed results](data/processed/project-results/) |
 

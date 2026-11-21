@@ -17,6 +17,8 @@ def code(text):
 cells = [
     md("""# KV cache boundary bisect — Colab runbook
 
+**Outside the assignment protocol.** The original study already used its single deliberate OOM. This notebook is for a separate draft multi-OOM study. See docs/ASSIGNMENT_COMPLETION.md for the submitted results.
+
 **Do not share your Colab account or credentials. You run these cells.** This notebook only dispatches after a TA-approved amendment and a completed, pushed receipt. It runs the default arm first, then expandable segments on the same physical GPU UUID. Each invocation performs one probe, exports a hashed capsule, downloads it, and waits for you to confirm the external save before continuing.
 
 If the receipt is still a template, the registered UUID differs from the allocated T4, or the runtime is not Python 3.11 / PyTorch 2.6 + CUDA 12.4 / Transformers 4.51.3, stop without running any probe."""),

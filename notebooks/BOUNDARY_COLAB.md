@@ -1,5 +1,7 @@
 # Boundary bisection Colab procedure
 
+> **Outside the assignment protocol.** The original experiment already used its single deliberate OOM. This notebook describes a separate draft multi-OOM study. Use the [assignment completion record](../docs/ASSIGNMENT_COMPLETION.md) and [saved one-OOM boundary](../docs/OOM_BOUNDARY.md) for the submitted experiment.
+
 The [boundary notebook](BOUNDARY_COLAB.ipynb) is the live paired experiment. The [presentation notebook](FINAL_PRESENTATION.ipynb) is a CPU replay of saved evidence.
 
 ## Before opening the notebook
