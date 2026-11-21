@@ -1,4 +1,4 @@
-"""Generate the robust, receipt-gated Colab bisection notebook with isolated subprocess workers, runtime adaptation, and torchvision shielding."""
+"""Generate the receipt-gated, per-probe-checkpoint Colab bisection notebook."""
 import json
 from pathlib import Path
 
@@ -17,298 +17,187 @@ def code(text):
 cells = [
     md("""# KV cache boundary bisect — Colab runbook
 
-**Do not share your Colab account or credentials. You run these cells.** This notebook runs on Google Colab with an allocated Nvidia Tesla T4 GPU. It runs the default arm first, then expandable segments on the same physical GPU UUID. Each step bisects between 114,688 and 131,072 down to <= 512 tokens, exports a hashed capsule, and downloads it to your computer."""),
+**Do not share your Colab account or credentials. You run these cells.** This notebook only dispatches after a TA-approved amendment and a completed, pushed receipt. It runs the default arm first, then expandable segments on the same physical GPU UUID. Each invocation performs one probe, exports a hashed capsule, downloads it, and waits for you to confirm the external save before continuing.
+
+If the receipt is still a template, the registered UUID differs from the allocated T4, or the runtime is not Python 3.11 / PyTorch 2.6 + CUDA 12.4 / Transformers 4.51.3, stop without running any probe."""),
     code("""# Cell 1 — runtime and one-GPU identity; no model is loaded here.
-import json, hashlib, os, pathlib, subprocess, sys, uuid, zipfile
-from datetime import datetime, timezone
+import hashlib, json, os, pathlib, shutil, subprocess, uuid, zipfile
 
-REPO = pathlib.Path('/content/KV-Cache-Scaling')
+BRANCH = os.environ.get('KV_CACHE_PAIRED_BRANCH', 'veena-submission')
+RECEIPT = os.environ.get('KV_CACHE_PAIRED_RECEIPT', 'prereg/bisect-2026-10-28/receipt.json')
+REPO = pathlib.Path('/content/KV-Cache-Scaling-paired')
 REPO_URL = 'https://github.com/DevanshSharma351/KV-Cache-Scaling.git'
+PYTHON = pathlib.Path(os.environ.get(
+    'KV_CACHE_PAIRED_PYTHON', '/content/kvcache-paired-venv/bin/python'))
+subprocess.run(['git', 'check-ref-format', '--branch', BRANCH], check=True)
 if not REPO.exists():
-    subprocess.run(['git', 'clone', '--branch', 'main', REPO_URL, str(REPO)], check=True)
-os.chdir(REPO)
-
-# Accept Python 3 (Colab runs 3.11, 3.12, or 3.13)
-assert sys.version_info[0] == 3, f'Requires Python 3, got {sys.version}'
-os.environ['PYTHONPATH'] = str(REPO / 'src')
-print('Python version:', sys.version)
-
-# Print GPU identity
-print(subprocess.run(['nvidia-smi', '-L'], text=True, capture_output=True, check=True).stdout)
-gpu_row = subprocess.run(
-    ['nvidia-smi', '--query-gpu=uuid,name,memory.total,driver_version', '--format=csv,noheader'],
-    text=True, capture_output=True, check=True).stdout.strip()
-assert gpu_row.count('GPU-') == 1 and ('Tesla T4' in gpu_row or ', T4,' in gpu_row), gpu_row
-SESSION_GPU_UUID = gpu_row.split(',')[0].strip()
-print('Physical GPU:', gpu_row)
-
-# Install the pinned CUDA 12.4 stack before importing torch.
-subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y', 'torchvision', 'torchaudio'], capture_output=True)
-subprocess.run([sys.executable, '-m', 'pip', 'install', 'torch==2.6.0',
-                '--index-url', 'https://download.pytorch.org/whl/cu124'], check=True)
-subprocess.run([sys.executable, '-m', 'pip', 'install', '-r', 'requirements-gpu.txt'], check=True)
-subprocess.run([sys.executable, '-m', 'pip', 'install', '-e', '.'], check=True)
-print('Environment setup complete!')"""),
-    code("""# Cell 2 — auto-register receipt and GPU session before probes.
-RECEIPT_DIR = REPO / 'prereg/bisect-2026-10-28'
-RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
-RECEIPT = 'prereg/bisect-2026-10-28/receipt.json'
+    subprocess.run(['git', 'clone', '--branch', BRANCH, REPO_URL, str(REPO)], check=True)
+source = subprocess.run(['git', 'remote', 'get-url', 'origin'], cwd=REPO, check=True,
+                        text=True, capture_output=True).stdout.strip()
+if source != REPO_URL:
+    raise RuntimeError('Use a clean clone of the reviewed GitHub repository')
 receipt_path = REPO / RECEIPT
+if not receipt_path.is_file():
+    raise RuntimeError('Missing committed, TA-approved paired receipt; stop before dependency setup or model probes')
+receipt = json.loads(receipt_path.read_text())
+if receipt.get('remote_branch') != BRANCH:
+    raise RuntimeError('Notebook branch must match the reviewed receipt branch')
 
-# Create receipt bound to current session GPU
-context_path = RECEIPT_DIR / 'context-inventory.json'
-context_data = {
-    'timestamp_utc': datetime.now(timezone.utc).isoformat(),
-    'python': sys.version,
-    'gpu_name': 'Tesla T4',
-    'gpu_identity_csv': gpu_row,
-    'gpu_uuid': SESSION_GPU_UUID,
-    'cuda_free_bytes': 15527116800,
-    'cuda_total_bytes': 15637086208,
-}
-context_path.write_text(json.dumps(context_data, indent=2))
+gpu = subprocess.check_output(['nvidia-smi', '--query-gpu=uuid,name', '--format=csv,noheader'], text=True)
+gpu_rows = gpu.strip().splitlines()
+if len(gpu_rows) != 1 or gpu_rows[0].split(',')[1].strip() not in ('Tesla T4', 'T4'):
+    raise RuntimeError('This experiment requires exactly one Tesla T4')
+SESSION_GPU_UUID = gpu_rows[0].split(',')[0].strip()
 
-pred_path = RECEIPT_DIR / 'prediction.json'
-pred_data = {
-    'schema_version': 'preregistration-amendment-v1',
-    'experiment_id': str(uuid.uuid4()),
-    'context_inventory_path': str(context_path.relative_to(REPO)),
-    'gpu_prediction': {'central_limit_tokens': 111232},
-    'acceptance_policy': {
-        'anchor_length': 114688,
-        'anchor_repeats': 3,
-        'confirmation_upper_length': 131072,
-        'resolution_tokens': 512,
-        'max_oom_count_per_allocator': 6,
-        'max_oom_count_total': 12,
-    },
-    'gpu_measurements_authorized': False,
-    'input_sha256': {}
-}
-pred_path.write_text(json.dumps(pred_data, indent=2))
+# Use a separate Python 3.11 environment. Keep Colab's notebook kernel CPU-only.
+if not PYTHON.is_file():
+    venv = str(PYTHON.parent.parent)
+    if shutil.which('python3.11'):
+        subprocess.run(['python3.11', '-m', 'venv', venv], check=True)
+    elif shutil.which('uv'):
+        subprocess.run(['uv', 'venv', '--python', '3.11', '--seed', venv], check=True)
+    else:
+        raise RuntimeError('Provide a dedicated Python 3.11 environment as described in the runbook')
+ENV = dict(os.environ, PYTHONPATH=str(REPO / 'src'), USE_TF='0', USE_FLAX='0')
+def run_source(*args, **kwargs):
+    return subprocess.run([str(PYTHON), *args], cwd=REPO, env=ENV, **kwargs)
 
-receipt_data = {
-    'status': 'COMPLETE_PREREGISTRATION_RECEIPT',
-    'experiment_id': pred_data['experiment_id'],
-    'prediction_path': str(pred_path.relative_to(REPO)),
-    'persistent_state_root': '/content/kvcache-bisect-state',
-    'registered_gpu_uuid': SESSION_GPU_UUID,
-}
-receipt_path.write_text(json.dumps(receipt_data, indent=2))
-receipt = receipt_data
-print(f'Preregistration receipt registered for GPU {SESSION_GPU_UUID}: OK')"""),
-    code("""# Cell 3 — staging and per-probe capsule export helper.
+# Verify the receipt, preregistration, source, and exact GPU before installing dependencies.
+gate_code = (
+    "import sys; from kv_cache_scaling.bisect_gate import load_verified_bisection; "
+    "v=load_verified_bisection('.',sys.argv[1]); "
+    "assert v.gpu_uuid.lower()==sys.argv[2].lower(), 'GPU UUID differs from the frozen inventory'; "
+    "print('Paired receipt and GPU identity verified')"
+)
+run_source('-c', "import sys; assert sys.version_info[:2]==(3,11), sys.version", check=True)
+run_source('-c', gate_code, RECEIPT, SESSION_GPU_UUID, check=True)
+run_source('-m', 'ensurepip', '--upgrade', check=True)
+run_source('-m', 'pip', 'install', 'torch==2.6.0+cu124',
+           '--index-url', 'https://download.pytorch.org/whl/cu124', check=True)
+run_source('-m', 'pip', 'install', '-r', 'requirements-gpu.txt', check=True)
+run_source('-c', "from kv_cache_scaling.probe import _import_runtime; "
+           "r=_import_runtime(); assert not r.torch.cuda.is_initialized(); "
+           "print(r.torch.__version__, r.torch.version.cuda, r.transformers.__version__)", check=True)"""),
+    code("""# Cell 3 — staging, per-probe capsule export, and external-save acknowledgement.
 from google.colab import files
-LOCAL = pathlib.Path('/content/kvcache-bisect-local')
-STATE = pathlib.Path(receipt['persistent_state_root'])
-AUDIT = pathlib.Path('/content/kvcache-bisect-audit')
-for root in (LOCAL, STATE, AUDIT): root.mkdir(parents=True, exist_ok=True)
-AUDIT.joinpath('prediction.json').write_bytes(pred_path.read_bytes())
-AUDIT.joinpath('receipt.json').write_bytes(receipt_path.read_bytes())
 EXPERIMENT_ID = receipt['experiment_id']
+STATE = pathlib.Path(receipt['persistent_state_root'])
+SESSION = pathlib.Path('/content/kvcache-paired-' + str(uuid.UUID(EXPERIMENT_ID)))
+SESSION.mkdir(exist_ok=False)  # Refuse to restart an initialized cohort in this Colab session.
+LOCAL = SESSION / 'local'
+AUDIT = SESSION / 'audit'
+for root in (LOCAL, STATE, AUDIT):
+    root.mkdir(parents=True, exist_ok=True)
+if (STATE / f'paired_boundary_oom_budget-{EXPERIMENT_ID}.json').exists():
+    raise RuntimeError('This experiment was already initialized; inspect its external checkpoints')
+AUDIT.joinpath('prediction.json').write_bytes((REPO / receipt['prediction_path']).read_bytes())
+AUDIT.joinpath('receipt.json').write_bytes(receipt_path.read_bytes())
+prediction = json.loads(AUDIT.joinpath('prediction.json').read_text())
+AUDIT.joinpath('context-inventory.json').write_bytes((REPO / prediction['context_inventory_path']).read_bytes())
 
-def save_checkpoint(label):
-    capsule = pathlib.Path(f'/content/bisect-{label}.zip')
-    with zipfile.ZipFile(capsule, 'w', zipfile.ZIP_DEFLATED) as z:
-        for root, prefix in ((STATE, 'state'), (LOCAL, 'local'), (AUDIT, 'audit')):
-            for path in sorted(root.rglob('*')):
-                if path.is_file() and not path.name.startswith('.'):
-                    z.writestr(f'{prefix}/{path.relative_to(root).as_posix()}', path.read_bytes())
+
+def capsule_files(root, prefix):
+    # Include only this registered cohort; never repackage older run data.
+    runs = root / 'runs'
+    if runs.exists():
+        for run_dir in sorted(runs.iterdir()):
+            manifest = run_dir / 'manifest.json'
+            if manifest.is_file() and json.loads(manifest.read_text()).get('experiment_id') == EXPERIMENT_ID:
+                for path in sorted(run_dir.rglob('*')):
+                    if path.is_file() and path.name != '.lock' and not path.name.startswith('.pending-'):
+                        yield f'{prefix}/{path.relative_to(root).as_posix()}', path.read_bytes()
+    for path in sorted(root.iterdir()):
+        if path.is_file() and EXPERIMENT_ID in path.name and not path.name.startswith('.pending-'):
+            yield f'{prefix}/{path.relative_to(root).as_posix()}', path.read_bytes()
+    if prefix == 'audit':
+        for path in sorted(root.rglob('*')):
+            if path.is_file() and path.name != '.lock' and not path.name.startswith('.pending-'):
+                yield f'{prefix}/{path.relative_to(root).as_posix()}', path.read_bytes()
+
+def checkpoint_and_wait(label, *, require_ack=True):
+    members = dict(capsule_files(STATE, 'state'))
+    members.update(dict(capsule_files(LOCAL, 'local')))
+    members.update(dict(capsule_files(AUDIT, 'audit')))
+    manifest = {name: hashlib.sha256(data).hexdigest() for name, data in members.items()}
+    capsule = SESSION / f'bisect-{label}.zip'
+    with zipfile.ZipFile(capsule, 'x', zipfile.ZIP_DEFLATED) as z:
+        for name, data in members.items(): z.writestr(name, data)
+        z.writestr('MANIFEST.json', json.dumps(manifest, sort_keys=True, indent=2))
     sha = hashlib.sha256(capsule.read_bytes()).hexdigest()
-    print(f'Checkpoint saved: {capsule.name} (SHA-256: {sha[:16]}...)')
+    print(f'Checkpoint: {capsule}; SHA-256={sha}; members={len(members)}')
+    files.download(str(capsule))
+    if require_ack:
+        ack = input('Verify the SHA-256 of your local download and enter that digest: ').strip().lower()
+        if ack != sha:
+            raise RuntimeError('Checkpoint save not acknowledged; stopping before next probe')
+        with (AUDIT / 'checkpoint-acknowledgements.jsonl').open('a') as log:
+            log.write(json.dumps({'capsule': capsule.name, 'sha256': sha}) + '\\n')
+            log.flush()
+            os.fsync(log.fileno())
     return capsule, sha
 
-print('Staging initialized successfully.')"""),
-    code("""# Cell 4 — default arm bisection loop with isolated worker subprocesses and torchvision shielding.
-import os, sys, pathlib, json, uuid, subprocess, hashlib
-from datetime import datetime, timezone
+print('If this runtime disconnects, stop the cohort; do not resume it in a new Colab runtime.')"""),
+    md("""## Default allocator arm
 
-# Remove mismatched torchvision from Colab environment to prevent ABI conflict
-subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y', 'torchvision', 'torchaudio'], capture_output=True)
+Each script call below launches one probe only. The checkpoint download and SHA acknowledgement complete before the loop can dispatch another probe. If any step fails, stop and preserve the capsule; do not retry that probe."""),
+    code("""# Run each arm at most once. A failure or missing acknowledgement halts the notebook.
+def run_arm(allocator, run_id, default_run_id=None):
+    (SESSION / (allocator + '.started')).touch(exist_ok=False)
+    args = ['scripts/bisect_boundary.py', '--receipt', RECEIPT, '--run-id', run_id,
+            '--local-root', str(LOCAL), '--allocator', allocator]
+    if default_run_id:
+        args += ['--default-run-id', default_run_id]
+    # Three anchors, one upper confirmation, five midpoints and finalization.
+    for step in range(1, 11):
+        proc = run_source(*args, text=True, capture_output=True)
+        print(proc.stdout)
+        label = f'{allocator}-{step:02d}'
+        if proc.returncode:
+            (AUDIT / (label + '-error.txt')).write_text(proc.stderr)
+            checkpoint_and_wait(label + '-failed', require_ack=False)
+            raise RuntimeError(proc.stderr or f'{allocator} step {step} failed')
+        result = json.loads(proc.stdout.strip().splitlines()[-1])
+        if result.get('status') not in ('STEP_COMPLETE', 'COMPLETE'):
+            raise RuntimeError(f'Unexpected coordinator output: {result}')
+        checkpoint_and_wait(label)
+        if result['status'] == 'COMPLETE':
+            return result
+    raise RuntimeError('Coordinator exceeded the registered number of steps')
 
-REPO = pathlib.Path('/content/KV-Cache-Scaling')
-if str(REPO / 'src') not in sys.path:
-    sys.path.insert(0, str(REPO / 'src'))
-
-STATE = pathlib.Path('/content/kvcache-bisect-state')
-STATE.mkdir(parents=True, exist_ok=True)
-
-PROTO_SHA = hashlib.sha256((REPO / 'configs/experiment.json').read_bytes()).hexdigest()
-CONFIG_SHA = hashlib.sha256((REPO / 'configs/models/qwen2.5-1.5b.json').read_bytes()).hexdigest()
-
-if 'SESSION_GPU_UUID' not in globals():
-    SESSION_GPU_UUID = subprocess.run(
-        ['nvidia-smi', '--query-gpu=uuid', '--format=csv,noheader'],
-        text=True, capture_output=True, check=True).stdout.strip()
-
-def run_single_probe(length, allocator, repeat, attempt_kind):
-    probe_id = str(uuid.uuid4())
-    worker_script = f'''
-import sys
-sys.modules["torchvision"] = None
-sys.modules["torchvision.ops"] = None
-import json
-sys.path.insert(0, "{REPO}/src")
-import kv_cache_scaling.probe as kp
-kp.EXPECTED_RUNTIME["python_minor"] = f"{{sys.version_info.major}}.{{sys.version_info.minor}}"
-try:
-    import torch
-    if getattr(torch.version, "cuda", None):
-        kp.EXPECTED_RUNTIME["cuda"] = torch.version.cuda
-except Exception:
-    pass
-
-from kv_cache_scaling.probe import ProbeRequest, _execute_probe
-req = ProbeRequest(
-    probe_id="{probe_id}",
-    length={length},
-    gpu_uuid="{SESSION_GPU_UUID}",
-    protocol_sha256="{PROTO_SHA}",
-    config_sha256="{CONFIG_SHA}",
-    allocator="{allocator}",
-    repeat={repeat},
-    attempt_kind="{attempt_kind}",
-    measurement="primary"
-)
-res = _execute_probe(req, root="{REPO}")
-print("RESULT_JSON_START")
-print(json.dumps(res))
-print("RESULT_JSON_END")
-'''
-    env = dict(os.environ)
-    env['PYTHONPATH'] = str(REPO / 'src')
-    if allocator == 'expandable':
-        env['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-        env['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
-    else:
-        env.pop('PYTORCH_CUDA_ALLOC_CONF', None)
-        env.pop('PYTORCH_ALLOC_CONF', None)
-
-    proc = subprocess.run([sys.executable, '-c', worker_script],
-                          env=env, capture_output=True, text=True)
-
-    status = 'error'
-    peak = None
-    error_msg = None
-    if 'RESULT_JSON_START' in proc.stdout:
-        try:
-            json_text = proc.stdout.split('RESULT_JSON_START')[1].split('RESULT_JSON_END')[0].strip()
-            res = json.loads(json_text)
-            status = res.get('status', 'error')
-            peak = res.get('peak_allocated_bytes')
-            error_msg = res.get('error')
-        except Exception as e:
-            error_msg = str(e)
-    else:
-        if 'out of memory' in proc.stderr.lower():
-            status = 'cuda_oom'
-        else:
-            error_msg = proc.stderr.strip() or 'Process exited without output'
-
-    record = {
-        'probe_id': probe_id,
-        'length': length,
-        'allocator': allocator,
-        'repeat': repeat,
-        'attempt_kind': attempt_kind,
-        'status': status,
-        'peak_allocated_bytes': peak,
-        'error': error_msg,
-        'timestamp': datetime.now(timezone.utc).isoformat()
-    }
-    log_file = STATE / f'probes_{allocator}.jsonl'
-    with log_file.open('a') as f:
-        f.write(json.dumps(record) + '\\n')
-
-    peak_str = f'{peak:,} B' if peak else 'None'
-    print(f'[{allocator.upper()}] L={length:6d} | status={status:<8s} | peak={peak_str}')
-    if status == 'error' and error_msg:
-        print(f'   -> Error detail: {error_msg}')
-    return record
-
-print('--- ARM 1: Default Allocator Bisection ---')
-# 1. Anchor 3 repeats at 114,688
-for rep in (1, 2, 3):
-    rec = run_single_probe(114688, 'default', rep, 'safe')
-    assert rec['status'] == 'success', f'Anchor failed at L=114688: {rec}'
-
-# 2. Confirm upper OOM at 131,072
-rec = run_single_probe(131072, 'default', 1, 'deliberate')
-assert rec['status'] == 'cuda_oom', f'Expected OOM at 131072, got {rec}'
-
-# 3. Bisect down to <= 512 tokens
-low = 114688
-high = 131072
-step = 0
-while high - low > 512:
-    step += 1
-    mid = ((low + high) // 2 // 512) * 512
-    rec = run_single_probe(mid, 'default', 1, 'deliberate')
-    if rec['status'] == 'success':
-        low = mid
-    else:
-        high = mid
-    if 'save_checkpoint' in globals():
-        save_checkpoint(f'default-step-{step}')
-
-default_result = {'last_success': low, 'first_cuda_oom': high, 'gap': high - low}
-print(f'\\n>>> Default Arm Complete: {default_result}')"""),
-    code("""# Cell 5 — expandable segments arm bisection loop with isolated worker subprocesses and torchvision shielding.
-print('--- ARM 2: Expandable Segments Allocator Bisection ---')
-# 1. Anchor 3 repeats at 114,688
-for rep in (1, 2, 3):
-    rec = run_single_probe(114688, 'expandable', rep, 'safe')
-    assert rec['status'] == 'success', f'Anchor failed at L=114688: {rec}'
-
-# 2. Confirm upper OOM at 131,072
-rec = run_single_probe(131072, 'expandable', 1, 'deliberate')
-assert rec['status'] == 'cuda_oom', f'Expected OOM at 131072, got {rec}'
-
-# 3. Bisect down to <= 512 tokens
-low = 114688
-high = 131072
-step = 0
-while high - low > 512:
-    step += 1
-    mid = ((low + high) // 2 // 512) * 512
-    rec = run_single_probe(mid, 'expandable', 1, 'deliberate')
-    if rec['status'] == 'success':
-        low = mid
-    else:
-        high = mid
-    if 'save_checkpoint' in globals():
-        save_checkpoint(f'expandable-step-{step}')
-
-expandable_result = {'last_success': low, 'first_cuda_oom': high, 'gap': high - low}
-print(f'\\n>>> Expandable Arm Complete: {expandable_result}')"""),
-    code("""# Cell 6 — compute allocator delta and export final capsule.
+DEFAULT_RUN_ID = str(uuid.uuid4())
+default_result = run_arm('default', DEFAULT_RUN_ID)"""),
+    code("""# Both arms must use the same still-connected Colab runtime and physical GPU.
+current_uuid = subprocess.check_output(['nvidia-smi', '--query-gpu=uuid', '--format=csv,noheader'],
+                                       text=True).strip()
+if current_uuid.lower() != SESSION_GPU_UUID.lower():
+    raise RuntimeError('GPU UUID changed; stop the cohort')
+if default_result['status'] != 'COMPLETE':
+    raise RuntimeError('Default arm and its external checkpoint must be complete')
+EXPANDABLE_RUN_ID = str(uuid.uuid4())
+expandable_result = run_arm('expandable', EXPANDABLE_RUN_ID, DEFAULT_RUN_ID)"""),
+    code("""# Cell 6 — final endpoints and allocator delta.
 assert default_result['gap'] <= 512 and expandable_result['gap'] <= 512
 delta_tokens = expandable_result['last_success'] - default_result['last_success']
 delta_percent = 100 * delta_tokens / default_result['last_success']
 summary = {
     'gpu_uuid': SESSION_GPU_UUID,
-    'default': default_result,
-    'expandable': expandable_result,
+    'experiment_id': EXPERIMENT_ID,
+    'run_ids': {'default': DEFAULT_RUN_ID, 'expandable': EXPANDABLE_RUN_ID},
+    'default': {k: default_result[k] for k in ('last_success','first_cuda_oom','gap')},
+    'expandable': {k: expandable_result[k] for k in ('last_success','first_cuda_oom','gap')},
     'expandable_delta_tokens': delta_tokens,
     'expandable_delta_percent': delta_percent,
 }
-print('\\n' + '='*50)
-print('FINAL BISECTION SUMMARY:')
 print(json.dumps(summary, indent=2))
-print('='*50)
-
 summary_path = AUDIT / 'bisection_summary.json'
 summary_path.write_text(json.dumps(summary, indent=2) + '\\n')
-
-final_capsule, sha = save_checkpoint('final-complete')
-print(f'Final Capsule Ready: {final_capsule} (SHA: {sha})')
-files.download(str(final_capsule))
-print('Downloading final capsule to your laptop!')"""),
+checkpoint_and_wait('final-complete')
+print('Save the final capsule as artifacts/experiments/<date>-paired-boundary/checkpoint.zip')"""),
 ]
 
 notebook = {
     "cells": cells,
-    "metadata": {"language_info": {"name": "python", "version": "3.13"},
+    "metadata": {"language_info": {"name": "python", "version": "3.11"},
                  "accelerator": "GPU",
                  "colab": {"name": "BOUNDARY_COLAB.ipynb", "provenance": []}},
     "nbformat": 4,

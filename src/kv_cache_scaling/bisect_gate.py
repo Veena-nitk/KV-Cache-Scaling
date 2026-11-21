@@ -20,6 +20,11 @@ def load_verified_bisection(root, receipt_path):
     verified = verify_receipt(root, receipt_path)
     receipt = json.loads((Path(root) / receipt_path).read_text())
     prediction = json.loads((Path(root) / receipt["prediction_path"]).read_text())
+    approval = prediction.get("ta_approval_reference")
+    if not isinstance(approval, str) or not approval.strip() or receipt.get("ta_approval_reference") != approval:
+        raise GateError("Receipt must carry the TA approval reference frozen with the amendment")
+    if verified.experiment_id != prediction.get("experiment_id"):
+        raise GateError("Bisection receipt and prediction must bind the same experiment ID")
     policy = prediction.get("acceptance_policy", {})
     expected = {
         "anchor_length": LOWER,
@@ -50,6 +55,7 @@ def load_verified_bisection(root, receipt_path):
         "src/kv_cache_scaling/bisect_gate.py",
         "notebooks/BOUNDARY_COLAB.ipynb",
         "notebooks/BOUNDARY_COLAB.md",
+        "requirements-gpu.txt",
     }
     if not required_inputs.issubset(prediction.get("input_sha256", {})):
         raise GateError("Bisection scripts are not frozen in the amendment prediction")
@@ -66,7 +72,10 @@ def initialize_budget(verified):
     with file_lock(path.with_suffix(".lock")):
         if path.exists():
             value = json.loads(path.read_text())
-            if value.get("experiment_id") != verified.experiment_id or value.get("max_per_allocator") != MAX_PER_ALLOCATOR:
+            if (value.get("experiment_id") != verified.experiment_id
+                    or value.get("receipt_sha256") != verified.receipt_sha256
+                    or value.get("max_per_allocator") != MAX_PER_ALLOCATOR
+                    or value.get("max_total") != 2 * MAX_PER_ALLOCATOR):
                 raise GateError("Bisection OOM budget identity mismatch")
             return value
         value = {
@@ -97,6 +106,8 @@ def bind_allocator_run(verified, allocator, run_id):
         value = json.loads(path.read_text())
         previous = value["run_ids"].get(allocator)
         if previous is None:
+            if run_id in value["run_ids"].values():
+                raise GateError("Each allocator needs its own run ID")
             value["run_ids"][allocator] = run_id
             atomic_json(path, value)
         elif previous != run_id:
@@ -112,6 +123,8 @@ def claim_deliberate_attempt(verified, request, run_id, point_key):
             raise GateError("Bisection OOM budget was not initialized")
         value = json.loads(path.read_text())
         allocator = request.allocator
+        if value["run_ids"].get(allocator) != str(UUID(run_id)):
+            raise GateError("The allocator run must be bound before spending its budget")
         if value.get("pending") is not None:
             raise GateError("A previous deliberate dispatch is unresolved; do not retry")
         if value["halted"].get(allocator):
@@ -165,6 +178,7 @@ def verify_bisection_launch(verified, request, run_id):
     manifest = json.loads((run_dir / "manifest.json").read_text())
     if (manifest.get("receipt_sha256") != verified.receipt_sha256
             or manifest.get("code_commit") != verified.code_commit
+            or manifest.get("environment_fingerprint") != verified.environment_fingerprint
             or manifest.get("experiment_id") != verified.experiment_id
             or manifest.get("gpu_uuid") != verified.gpu_uuid
             or manifest.get("allocator") != request.allocator
@@ -188,11 +202,14 @@ def verify_bisection_launch(verified, request, run_id):
                 or pending.get("allocator") != allocator or pending.get("length") != request.length
                 or pending.get("point_key") != starts[0].get("point_key")):
             raise GateError("Deliberate probe has no matching consumed bisection budget slot")
-    elif request.length != LOWER:
-        raise GateError("Safe probes are permitted only for the registered lower anchor")
+    elif budget.get("pending") is not None or request.length != LOWER:
+        raise GateError("Safe anchors require an idle budget and the registered lower anchor")
+    # The matching pending slot belongs to this request. The scheduler needs the
+    # number of previous attempts to validate whether dispatching it is allowed.
+    previous_attempts = budget["attempts"][allocator] - (request.attempt_kind == "deliberate")
     expected = next_probe_spec(events, allocator,
                                oom_count=budget["oom_outcomes"][allocator],
-                               attempts=budget["attempts"][allocator])
+                               attempts=previous_attempts)
     if expected.get("complete"):
         raise GateError("Boundary interval is already complete; no further worker is authorized")
     if any(getattr(request, key) != expected[key] for key in

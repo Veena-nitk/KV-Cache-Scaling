@@ -11,12 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from kv_cache_scaling.bisect_gate import (
-    LOWER, UPPER, RESOLUTION, MAX_PER_ALLOCATOR, claim_deliberate_attempt,
+    claim_deliberate_attempt,
     bind_allocator_run, finish_attempt, initialize_budget, load_verified_bisection,
     next_probe_spec,
 )
 from kv_cache_scaling.coordinator_store import RunStore, atomic_json, file_lock, now
-from kv_cache_scaling.gate import digest, json_bytes
+from kv_cache_scaling.gate import json_bytes
 from kv_cache_scaling.probe import ProbeRequest
 from kv_cache_scaling.processes import worker_env
 from kv_cache_scaling.sweep import IDLE_TOLERANCE, DriverObserver, collect_process, point_key
@@ -59,14 +59,24 @@ def ensure_expandable_follows_default(verified, allocator, default_run_id):
         raise ValueError("Expandable arm requires the completed default --default-run-id")
     default_run_id = str(UUID(default_run_id))
     root = verified.state_root / "runs" / default_run_id
+    manifest = json.loads((root / "manifest.json").read_text())
+    if (manifest.get("experiment_id") != verified.experiment_id
+            or manifest.get("receipt_sha256") != verified.receipt_sha256
+            or manifest.get("gpu_uuid") != verified.gpu_uuid
+            or manifest.get("allocator") != "default"
+            or manifest.get("execution_scope") != "paired_allocator_bisection"):
+        raise RuntimeError("Default arm does not belong to this paired experiment")
+    if initialize_budget(verified)["run_ids"]["default"] != default_run_id:
+        raise RuntimeError("Default arm does not match the registered allocator run")
     rows = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
     completion = [r for r in rows if r.get("event") == "allocator_bisection_complete"
                   and r.get("allocator") == "default"]
-    if len(completion) != 1:
+    if (len(completion) != 1 or rows[-1] != completion[0]
+            or not get_next_probe_spec(rows, "default").get("complete")):
         raise RuntimeError("Default arm must have one completed bracket before expandable starts")
 
 
-def execute_single_probe(store, observer, spec, verified, run_id, local_root):
+def execute_single_probe(store, observer, spec, verified, run_id):
     before = observer.read()
     if before["uuid"].lower() != verified.gpu_uuid.lower():
         raise RuntimeError("GPU identity changed before worker launch")
@@ -101,10 +111,26 @@ def execute_single_probe(store, observer, spec, verified, run_id, local_root):
         store.append("run_stopped", reason="Probe interrupted; inspect capsule before any new cohort")
         raise
 
+    metrics = record.get("metrics") or {}
+    if record["status"] == "cuda_oom":
+        warnings = metrics.get("warnings", [])
+        if (metrics.get("stage") != "forward"
+                or any("expandable_segments" in warning.lower() and "not supported" in warning.lower()
+                       for warning in warnings)):
+            # Count the typed OOM toward the budget, but it cannot bound this workload.
+            finish_attempt(verified, request, run_id, "cuda_oom")
+            store.append("probe_result", probe_id=request.probe_id, point_key=key,
+                         request=asdict(request), phase=spec["phase"], **record)
+            store.append("run_stopped", reason="OOM outside the supported forward workload")
+            raise RuntimeError("Only a typed forward OOM under the requested allocator can bound the workload")
     finish_attempt(verified, request, run_id, record.get("status"))
     row = store.append("probe_result", probe_id=request.probe_id, point_key=key,
                        request=asdict(request), phase=spec["phase"], **record)
-    after = observer.read()
+    try:
+        after = observer.read()
+    except Exception:
+        store.append("run_stopped", reason="GPU idle/identity observation failed")
+        raise
     if (after["uuid"] != before["uuid"] or after["driver_version"] != before["driver_version"]
             or after["total_bytes"] != before["total_bytes"]
             or abs(after["used_bytes"] - before["used_bytes"]) > IDLE_TOLERANCE):
@@ -189,7 +215,7 @@ def main(argv=None):
             print(json.dumps({"status": "COMPLETE", **spec}))
             return 0
 
-        row = execute_single_probe(store, observer, spec, verified, run_id, args.local_root)
+        row = execute_single_probe(store, observer, spec, verified, run_id)
         print(json.dumps({"status": "STEP_COMPLETE", "allocator": args.allocator,
                           "length": row["request"]["length"], "probe_status": row["status"],
                           "phase": spec["phase"], "probe_id": row["probe_id"]}))
