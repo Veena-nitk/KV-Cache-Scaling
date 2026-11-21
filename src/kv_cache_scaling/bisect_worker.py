@@ -1,9 +1,7 @@
 """Fresh-process worker entry for the approved, receipt-gated bisection cohort."""
 import argparse
 import json
-import os
 from pathlib import Path
-import sys
 
 from .probe import ProbeRequest, _execute_probe, write_probe_result
 from .bisect_gate import load_verified_bisection, verify_bisection_launch
@@ -35,7 +33,7 @@ def main(argv=None):
         write_probe_result(args.output, result)
         return 1
     try:
-        result = _execute_probe(request, root=args.root)
+        result = _execute_probe(request, root=args.root, verified=verified)
     except Exception as error:
         result = {
             "schema_version": "primary-probe-v1",

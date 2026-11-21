@@ -71,10 +71,7 @@ the incompatibility between repeated failure bisection and this OOM budget.
 - [x] Four transfer predictions and compatible published KV-block comparison supplied.
 - [x] CPU reproduction, report generation and presentation tooling implemented.
 - [ ] Complete both held-out allocator groups at three repeats (expandable has one saved repeat).
-- [ ] Perform the one registered final boundary attempt and preserve its actual outcome.
+- [x] Perform the one registered final boundary attempt and preserve its actual outcome. See the [saved default bracket](OOM_BOUNDARY.md).
 - [ ] Claim full research acceptance only after missing hardware evidence is recorded.
 
-The GPU quota interruption is an unmet criterion, not a substitute for a measured
-OOM. The software and saved-data deliverables can be presented while this remains
-explicitly open. Historical review provenance is preserved; an independent human
-review is not invented.
+The saved run used the single deliberate OOM. The expandable hardware threshold, the original held-out repeat deficit, and causal decomposition of the threshold prediction error remain open. See the [assignment completion record](ASSIGNMENT_COMPLETION.md).
