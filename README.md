@@ -19,6 +19,80 @@ An empirical and theoretical investigation of GPU memory scaling during the long
 
 ---
 
+## 🚀 Steps to Run the Project Locally (by Pulling from GitHub)
+
+Follow these simple, step-by-step instructions to clone, set up, and execute this project locally on your machine (macOS, Linux, or Windows WSL). **No GPU is required** to run tests, verify mathematical scaling laws, and reproduce analytical reports.
+
+### Step 1: Clone the Repository from GitHub
+Open your terminal and clone the repository:
+```bash
+# Clone the repository
+git clone https://github.com/DevanshSharma351/KV-Cache-Scaling.git
+cd KV-Cache-Scaling
+
+# Switch to the submission branch (or remain on main)
+git checkout veena-submission
+```
+
+### Step 2: Create & Activate a Python Virtual Environment
+Ensure you have Python 3.10, 3.11, 3.12, or 3.13:
+```bash
+# Create a virtual environment named 'venv'
+python3 -m venv venv
+
+# Activate the virtual environment
+# On macOS / Linux:
+source venv/bin/activate
+# On Windows (cmd / PowerShell):
+# venv\Scripts\activate
+```
+
+### Step 3: Install Package Dependencies
+Install the package in editable mode:
+```bash
+# Upgrade pip
+pip install --upgrade pip
+
+# Install project in editable mode
+pip install -e .
+
+# (Optional) Install plotting & report analysis libraries
+pip install -r requirements-analysis.txt
+```
+
+### Step 4: Run the Full Test Suite (130 Tests on CPU)
+Execute all 130 tests to verify that every component, mathematical derivation, and contract passes:
+```bash
+PYTHONPATH="src" python3 -m unittest discover -s tests -q
+```
+**Expected Output:**
+```text
+Ran 130 tests in ~17.5s
+OK (skipped=3)
+```
+
+### Step 5: Regenerate the Academic Research Report PDF
+Generate the publication-quality research report PDF in pure Python (zero external dependencies):
+```bash
+python3 scripts/generate_project_report_pdf.py
+```
+**Output:** Generates `report/KV_Cache_Scaling_Report.pdf` and `docs/KV_Cache_Scaling_Report.pdf`.
+
+### Step 6: Regenerate the 5 TA Requirements Compliance PDF
+Generate the landscape compliance matrix PDF verifying all 5 deliverables:
+```bash
+python3 scripts/generate_ta_compliance_pdf.py
+```
+**Output:** Generates `report/TA_REQUIREMENTS_COMPLIANCE.pdf`.
+
+### Step 7: (Optional) Interactive Demo & GPU Bisection on Google Colab
+If you have access to an NVIDIA GPU (e.g. Tesla T4 on Google Colab) and wish to run live hardware probes:
+1. Open [`notebooks/FINAL_PRESENTATION.ipynb`](notebooks/FINAL_PRESENTATION.ipynb) or [`notebooks/BOUNDARY_COLAB.ipynb`](notebooks/BOUNDARY_COLAB.ipynb) in Google Colab.
+2. Select **Runtime → Change runtime type → T4 GPU**.
+3. Run all cells to execute isolated subprocess probes, track peak VRAM, and verify memory bisection in real time.
+
+---
+
 ## Master TA Requirements Compliance Matrix
 
 All 5 TA requirements are verified, passed, and integrated into the repository:
@@ -30,88 +104,6 @@ All 5 TA requirements are verified, passed, and integrated into the repository:
 | **3** | **Methods Section with Exact File:Line Citations** | **SATISFIED** | • **Dynamic KV Extraction:** `src/kv_cache_scaling/probe.py:344-346`<br>• **Peak Stats Reset:** `src/kv_cache_scaling/probe.py:347`<br>• **Logits Truncation:** `src/kv_cache_scaling/probe.py:317` (`logits_to_keep=1`)<br>• **Attention Kernel:** `src/kv_cache_scaling/probe.py:295-301` (forced SDPA)<br>• **Allocator Injection:** `src/kv_cache_scaling/processes.py:12-18`<br>• **Pre-Registration:** `prereg/formal-2026-10-18-t4/receipt.json` | • [`docs/METHODS.md:1-50`](docs/METHODS.md)<br>• [`src/kv_cache_scaling/probe.py`](src/kv_cache_scaling/probe.py)<br>• [`docs/TA_RESPONSE.md:98-155`](docs/TA_RESPONSE.md#L98)<br>• Section: [Codebase Architecture & File Citations](#codebase-architecture--file-citations) |
 | **4** | **Committed Prediction (Table A) vs. Fitted Model (Table B)** | **SATISFIED** | • **Table A (Committed Prediction $L_{pred}=111{,}232$ tokens):**<br>&nbsp;&nbsp;- Error vs. $114{,}688$ lower bound: $\mathbf{-3.01\%}$ (conservative)<br>&nbsp;&nbsp;- Error vs. $131{,}071$ upper bound: $\mathbf{-15.14\%}$ (conservative)<br>&nbsp;&nbsp;- Error vs. Default Bisection ($118{,}784$): $\mathbf{-6.36\%}$<br>• **Table B (Post-Hoc OLS Fit, slope $= 95{,}236.95$ B/tok):**<br>&nbsp;&nbsp;- Analytical crossing: $130{,}509$ tokens<br>&nbsp;&nbsp;- Held-out error at $L=114{,}688$: $\mathbf{-0.0104\%}$ (default), $\mathbf{0.0000\%}$ (expandable) | • [`docs/PREDICTION_ERROR_AT_CURRENT_BRACKET.md:1-40`](docs/PREDICTION_ERROR_AT_CURRENT_BRACKET.md)<br>• [`docs/TA_RESPONSE.md:157-220`](docs/TA_RESPONSE.md#L157)<br>• Section: [Table A vs. Table B](#table-a-vs-table-b-separating-committed-vs-fitted-predictions) |
 | **5** | **Published Measured vLLM Benchmark Figure Naming Exact GPU** | **SATISFIED** | • **Target Architecture:** `Qwen/Qwen3-8B` (BF16, 36 layers, 8 KV heads, dim 128)<br>• **Inference Engine:** **vLLM v0.30.0** (`--max-model-len 8192`)<br>• **Hardware:** **NVIDIA A10G 24GB PCIe Gen4** (AWS EC2 `g5.xlarge`, not SXM)<br>• **Reported KV Pool:** $3.16$ GiB ($23{,}040$ GPU tokens startup figure)<br>• **Analytical Model Prediction:** $23{,}010$ tokens<br>• **Quantified Error:** $\mathbf{-30 \text{ tokens (-0.1302\%)}}$ | • [`docs/VLLM_PUBLISHED_FIGURE.md:1-35`](docs/VLLM_PUBLISHED_FIGURE.md)<br>• [`docs/TA_RESPONSE.md:222-275`](docs/TA_RESPONSE.md#L222)<br>• Section: [Cross-Hardware & Production Validation on vLLM](#cross-hardware--production-validation-on-vllm) |
-
----
-
-## Step-by-Step Rules to Execute Locally
-
-Follow these simple rules to pull and run this project locally on your machine (macOS, Linux, or Windows WSL). **No GPU is required** to run the unit tests, verify calculations, and regenerate reports.
-
-### Step 1: Clone the Repository from GitHub
-Open your terminal and clone the repository:
-```bash
-# Clone the repository
-git clone https://github.com/DevanshSharma351/KV-Cache-Scaling.git
-cd KV-Cache-Scaling
-
-# Checkout the submission branch containing all bisection and report data
-git checkout veena-submission
-```
-
-### Step 2: Set up a Python Virtual Environment
-Ensure you have Python 3.10, 3.11, 3.12, or 3.13 installed:
-```bash
-# Create a fresh virtual environment
-python3 -m venv venv
-
-# Activate the virtual environment
-# On macOS / Linux:
-source venv/bin/activate
-# On Windows (cmd/PowerShell):
-# venv\Scripts\activate
-```
-
-### Step 3: Install Dependencies
-Install the package in editable mode:
-```bash
-# Upgrade pip
-pip install --upgrade pip
-
-# Install the project in editable mode
-pip install -e .
-
-# (Optional) Install plotting & report analysis dependencies
-pip install -r requirements-analysis.txt
-```
-
-### Step 4: Run the Full Test Suite (130 Passing Tests)
-Execute all 130 tests to verify that every component, mathematical derivation, and contract passes:
-```bash
-PYTHONPATH="src" python3 -m unittest discover -s tests -q
-```
-**Expected Output:**
-```text
-Ran 130 tests in ~17.5s
-OK (skipped=3)
-```
-
-### Step 5: Regenerate the Academic Report PDF Locally
-Generate the publication-quality 4-page research report PDF in pure Python with zero third-party dependencies:
-```bash
-python3 scripts/generate_project_report_pdf.py
-```
-**Expected Output:**
-```text
-[OK] Generated PDF (4 pages) -> report/KV_Cache_Scaling_Report.pdf
-[OK] Copied report PDF -> docs/KV_Cache_Scaling_Report.pdf
-```
-
-### Step 6: Regenerate the 5 TA Requirements Compliance PDF
-Generate the landscape compliance matrix PDF:
-```bash
-python3 scripts/generate_ta_compliance_pdf.py
-```
-**Expected Output:**
-```text
-[OK] Generated TA Compliance PDF -> report/TA_REQUIREMENTS_COMPLIANCE.pdf
-[OK] Synchronized TA Compliance PDF across all locations.
-```
-
-### Step 7: (Optional) Interactive Demo & GPU Bisection on Google Colab
-If you have an NVIDIA GPU (e.g. Tesla T4 on Google Colab) and wish to execute live GPU probes:
-1. Open [`notebooks/FINAL_PRESENTATION.ipynb`](notebooks/FINAL_PRESENTATION.ipynb) or [`notebooks/BOUNDARY_COLAB.ipynb`](notebooks/BOUNDARY_COLAB.ipynb) in Google Colab.
-2. Select **Runtime → Change runtime type → T4 GPU**.
-3. Run all cells to execute isolated subprocess probes, track peak VRAM, and verify memory bisection in real time.
 
 ---
 
