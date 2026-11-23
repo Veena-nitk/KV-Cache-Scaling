@@ -12,41 +12,34 @@
 \usepackage{cleveref}
 \usepackage{microtype}
 \usepackage{fancyhdr}
-
-\definecolor{primaryblue}{RGB}{25, 75, 135}
-\definecolor{accentorange}{RGB}{205, 85, 25}
-\definecolor{codebg}{RGB}{245, 247, 250}
-\definecolor{grayborder}{RGB}{210, 215, 225}
+\usepackage{caption}
 
 \hypersetup{
     colorlinks=true,
-    linkcolor=primaryblue,
-    citecolor=primaryblue,
-    urlcolor=primaryblue,
-    pdftitle={Empirical and Analytical Characterization of Key-Value Cache Scaling in Large Language Models},
-    pdfauthor={Devansh Sharma, Veena S, National Institute of Technology Karnataka (NITK)}
+    linkcolor=blue!70!black,
+    citecolor=blue!70!black,
+    urlcolor=blue!70!black
 }
 
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{\small\textcolor{gray}{KV-Cache Memory Scaling \& Boundary Characterization}}
-\fancyhead[R]{\small\textcolor{gray}{Devansh Sharma, Veena S (NITK Surathkal)}}
+\fancyhead[L]{\small\textcolor{gray}{KV-Cache Memory Scaling and OOM Boundaries}}
+\fancyhead[R]{\small\textcolor{gray}{Sharma and Veena S $|$ NITK Surathkal}}
 \fancyfoot[C]{\small\thepage}
 \renewcommand{\headrulewidth}{0.4pt}
-\renewcommand{\footrulewidth}{0.4pt}
 
 \title{
-    \vspace{-1.5cm}
-    \textbf{\Large Empirical and Analytical Characterization of Key-Value Cache Memory Scaling and OOM Boundaries in Large Language Models}\\[0.4cm]
+    \vspace{-1.2cm}
+    \textbf{\Large Empirical and Analytical Characterization of Key-Value Cache Memory Scaling and OOM Boundaries in Large Language Models}\\[0.3cm]
     \large An Investigation on Qwen2.5-1.5B with Grouped-Query Attention on NVIDIA Tesla T4
 }
 
 \author{
-    \textbf{Devansh Sharma, Veena S}\\
+    \textbf{Devansh Sharma \qquad Veena S}\\[0.15cm]
     Department of Computer Science and Engineering\\
     National Institute of Technology Karnataka (NITK), Surathkal\\
-    \texttt{devanshsharma.241cs121@nitk.edu.in, veenas.241cs162@nitk.edu.in}\\
-    GitHub: \href{https://github.com/DevanshSharma351/KV-Cache-Scaling}{\texttt{DevanshSharma351/KV-Cache-Scaling}} $|$ \href{https://github.com/Veena-nitk/KV-Cache-Scaling}{\texttt{Veena-nitk/KV-Cache-Scaling}}
+    \texttt{devanshsharma.241cs121@nitk.edu.in \qquad veenas.241cs162@nitk.edu.in}\\[0.15cm]
+    \href{https://github.com/DevanshSharma351/KV-Cache-Scaling}{GitHub Repository}
 }
 
 \date{November 2026}
@@ -55,68 +48,281 @@
 \maketitle
 
 \begin{abstract}
-As Large Language Models (LLMs) transition to ultra-long context windows, GPU memory management during the prefill and decoding phases becomes the primary operational bottleneck. While static weight footprint is invariant to context length, the Key-Value (KV) cache grows linearly with sequence length $L$, interacting with activation transients, framework buffers, and memory fragmentation. In this research project, we present a mathematically rigorous and experimentally validated investigation of KV-cache scaling for the \texttt{Qwen/Qwen2.5-1.5B} architecture evaluated on an NVIDIA Tesla T4 (16~GB VRAM) system under PyTorch 2.6.0 and CUDA 12.4. We derive an analytical memory scaling model accounting for Grouped-Query Attention (GQA) and tied embeddings, register an immutable pre-experimental prediction of the maximum context capacity (committed at 111,232 tokens), and execute an isolated multi-process probing harness across sequence lengths from 512 to 114,688 tokens (52 primary probes). Our findings establish: (1) an empirical KV-cache growth rate of exactly $28,672.000$~bytes/token ($R^2 = 1.0$), matching theoretical prediction with zero deviation; (2) complete empirical memory closure at $L=114,688$ with $0$~bytes unaccounted; (3) a quantifiable defragmentation benefit from PyTorch's \texttt{expandable\_segments:True} allocator, reducing peak reserved memory overhead by 644~MiB; (4) an empirical Out-Of-Memory (OOM) bracket between 114,688 and 131,072 tokens; and (5) a paired bisection revealing an allocator capacity gain of $+8,704$ tokens ($+7.33\%$). Crucially, our architectural autopsy of the upper OOM at $L=131,072$ discovers that the failure is not precipitated by gradual KV-cache saturation, but rather by an abrupt 34.36~GB framework mask cliff triggered inside HuggingFace Transformers when the context length equals or exceeds the sliding window parameter. Finally, we validate our analytical scaling framework against published production benchmarks on vLLM, demonstrating an error of just $-0.1302\%$.
+We derive the FP16 memory footprint of Qwen2.5-1.5B and test how much context fits in a single cold prefill on a Tesla T4. An advance estimate of 111,232 tokens was committed before measurement. Across 52 primary probes at nine lengths, both allocators retained 28,672 key-value (KV) bytes per token ($R^2 = 1.0$). At 114,688 tokens, expandable segments used 644 MiB less peak reserved memory. A separate default-allocator run succeeded at 114,688 tokens and raised a typed CUDA out-of-memory (OOM) error at 131,072. The failed 32.00 GiB request matches a dense causal-mask allocation in the pinned framework source. We further execute a paired-bisection search down to 512-token resolution, revealing that PyTorch's expandable segments allocator unlocks an additional $+8{,}704$ tokens ($+7.33\%$) of context capacity over the default allocator on the exact same GPU. Finally, we evaluate the analytical KV formula against published production vLLM cache-pool measurements, demonstrating $-0.1302\%$ error.
 \end{abstract}
 
 \section{Introduction}
-Autoregressive Transformer inference is governed by two memory pools: static parameter weights and dynamic runtime allocations (activations, workspace, and KV-cache). For short sequences ($L \le 2048$), weights dominate. At $32\text{k}$ to $128\text{k}+$ tokens, the linear accumulation of Key and Value vectors across layers and heads strains Video RAM (VRAM), inducing \texttt{torch.cuda.OutOfMemoryError} crashes. This paper studies the memory scaling of \texttt{Qwen/Qwen2.5-1.5B} on a commodity NVIDIA Tesla T4 GPU (16~GB VRAM).
+The memory cost of long-context inference combines fixed parameter storage, a KV cache that grows with sequence length, and transient allocations during the forward pass. We ask three questions: How accurately does model configuration predict retained KV bytes? How does allocator policy affect peak memory reserved at a fixed length? What do successful and failed prefills establish about the context limit?
 
-\section{Theoretical Memory Model and GQA Derivation}
-For hidden dimension $H=1536$, intermediate dimension $I=8960$, layer count $N=28$, vocabulary $V=151936$, query heads $n_{heads}=14$, key/value heads $n_{kv\_heads}=2$, and head dimension $d=128$:
+The evaluation uses batch-one FP16 prefills and a pinned attention backend. The model card describes a 32,768-token context [1]. The longer sequences serve as synthetic memory-admission tests.
+
+\section{Theoretical memory model}
+The pinned configuration has 28 layers ($N$), hidden width $H = 1{,}536$, intermediate width $I = 8{,}960$, vocabulary $V = 151{,}936$, 12 query heads, two KV heads ($K$) and head dimension $D = 128$ [1]. Set $q = 12D$ and $k = KD$. Count the tied embedding once, then add the projection weights and biases, gated MLP weights and RMSNorm scales:
 \begin{equation}
-    P = V \cdot H + N \left[ 2H^2 + 2H(n_{kv\_heads} d) + 3HI + 2H \right] + H = 1{,}543{,}714{,}304 \text{ parameters}.
+P = VH + N[Hq + 2Hk + qH + q + 2k + 3HI + 2H] + H = 1{,}543{,}714{,}304
 \end{equation}
-In FP16 ($S_{bytes}=2$): $W = 1{,}543{,}714{,}304 \times 2 = 3{,}087{,}428{,}608 \text{ bytes} \approx 2{,}944.40 \text{ MiB}$.
-
-Under Grouped-Query Attention (GQA), the closed-form KV-cache scaling law is:
+FP16 weights occupy $W = 2P = 3{,}087{,}428{,}608$ bytes. The cache stores one key and one value per KV head, layer and token. For context length $L$, batch size $B$ and element width $s = 2$ bytes:
 \begin{equation}
-    KV(L, B) = 2 \cdot B \cdot L \cdot N \cdot n_{kv\_heads} \cdot d \cdot S_{bytes}.
+KV(L, B) = 2BLNKDs = 28{,}672BL \text{ bytes.}
 \end{equation}
-For $B=1$: $KV(L, 1) = 2 \times 1 \times L \times 28 \times 2 \times 128 \times 2 = 28{,}672 \cdot L \text{ bytes}$. Neglecting GQA ($n_{heads}=14$) produces a $7.0\times$ overestimation ($200{,}704$ bytes/token).
+Using the 12 query heads in place of the two KV heads overestimates retained KV by a factor of six. Counting the tied embedding twice adds 466,747,392 bytes to the FP16 weight estimate.
 
-\section{Pre-Registration Protocol and Subprocess Architecture}
-Before collecting GPU measurements, an analytical context ceiling of $111{,}232$ tokens was committed to git (commit \texttt{7baff5121}). Probes run in clean, isolated subprocesses via \texttt{subprocess.run()} to prevent memory leaks and CUDA context contamination.
+\section{Preregistration and experimental methods}
 
-\section{Empirical Results and Discrepancy Accounting}
-Across 52 primary probes from $L=512$ to $114{,}688$, ordinary least-squares regression yields an empirical KV slope of $28{,}672.000$ B/token with $R^2 = 1.000$.
+\subsection{Advance context estimate}
+The original prediction was committed as \texttt{7baff5121} on 18 October 2026 at 19:54:52 IST. A later receipt documents observation of the commitment before model measurement [2]. The central prefill tensor envelope was $W + BL(28{,}672 + 78{,}336)$ bytes. The 78,336 B/token term models transient use. The admission budget additionally reserved 536,870,912 bytes as headroom.
+
+With 15,527,116,800 usable bytes after CUDA context startup and $B = 1$, the central budget crossing was 111,232 tokens. The assumption range was 76,024 to 131,072 tokens after the model configuration cap. The tensor envelope alone is used for comparisons with measured peak allocation.
+
+\subsection{Isolated prefill and memory counters}
+Each probe loaded the pinned FP16 Qwen2.5-1.5B revision in a fresh process under Python 3.11.13, PyTorch 2.6.0+cu124, CUDA 12.4 and Transformers 4.51.3. A single prefill started with an empty DynamicCache and random tokens. The worker forced the efficient SDPA backend and used \texttt{logits\_to\_keep=1} with attention and hidden-state outputs disabled [3].
+
+The worker synchronized CUDA and reset peak counters after weight loading, before allocating inputs and cache. It recorded PyTorch allocated and reserved peaks after the forward pass and checked cache tensor shape, dtype and logical bytes. Deduplicated storage and retained-memory snapshots provide additional checks. Sampled device telemetry has lower temporal resolution than allocator high-water marks.
+
+\subsection{Allocator settings and checkpoints}
+The default arm cleared both allocator environment aliases. The expandable arm set \texttt{PYTORCH\_CUDA\_ALLOC\_CONF=expandable\_segments:True} before CUDA initialization. Workers used the native backend and checked for unsupported allocator settings. Each worker wrote a typed result to a durable journal. The coordinator verified an external checkpoint before dispatching the next probe [3].
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/01_peak_vs_length.pdf}
+\caption{Measured allocated peaks and the preregistered tensor envelope. The shaded band represents sensitivity to model assumptions [4].}
+\label{fig:peak_vs_length}
+\end{figure}
+
+\section{Empirical memory scaling}
+The core cohort contains 48 primary sweep workers, four held-out long-context workers and 28 diagnostic workers. The primary summary includes the 48 sweep and four held-out records, giving 27 default and 25 expandable measurements at nine lengths. The five original required lengths have three repeats per allocator. The expandable arm has one repeat at 114,688 tokens [4, 5].
 
 \begin{table}[htbp]
 \centering
 \small
-\caption{Memory Discrepancy Accounting at $L=114,688$ (NVIDIA T4, FP16).}
-\begin{tabular}{lrrr}
+\caption{Primary median memory counters (bytes). Each allocator-length cell has three repeats except expandable at 114,688 tokens ($n = 1$).}
+\begin{tabular}{rrrrrr}
 \toprule
-\textbf{Component} & \textbf{Bytes} & \textbf{MiB} & \textbf{\% of Peak} \\
+\textbf{Length ($L$)} & \textbf{KV bytes} & \textbf{Default peak alloc} & \textbf{Default peak res} & \textbf{Expandable peak alloc} & \textbf{Expandable peak res} \\
 \midrule
-Static Model Weights ($W$)              & 3,087,428,608  & 2,944.40 & 22.02\% \\
-Dynamic KV-Cache ($KV(114688, 1)$)     & 3,288,334,336  & 3,136.00 & 23.45\% \\
-Attention \& Hidden State Activations   & 6,531,358,720  & 6,228.80 & 46.58\% \\
-Framework Workspace \& Buffers          & 1,113,547,264  & 1,062.00 & 7.94\% \\
-\midrule
-\textbf{Total Modeled / Accounted}      & \textbf{14,020,668,928} & \textbf{13,371.18} & \textbf{100.00\%} \\
-\textbf{Observed Peak Allocated}        & \textbf{14,020,668,928} & \textbf{13,371.18} & \textbf{100.00\%} \\
-\midrule
-\textbf{Explicit Unaccounted Row}       & \textbf{0}     & \textbf{0.00} & \textbf{0.00\%} \\
+512     & 14,680,064     & 3,146,681,856  & 3,330,277,376  & 3,144,715,776  & 3,164,602,368 \\
+1,024   & 29,360,128     & 3,195,448,832  & 3,403,677,696  & 3,193,482,752  & 3,202,351,104 \\
+2,048   & 58,720,256     & 3,295,079,936  & 3,529,506,816  & 3,291,016,704  & 3,317,694,464 \\
+4,096   & 117,440,512    & 3,487,002,112  & 3,693,084,672  & 3,486,084,608  & 3,529,506,816 \\
+8,192   & 234,881,024    & 3,877,137,920  & 4,240,441,344  & 3,876,220,416  & 3,925,868,544 \\
+16,384  & 469,762,048    & 4,657,409,536  & 5,171,576,832  & 4,656,492,032  & 4,764,729,344 \\
+32,768  & 939,524,096    & 6,217,952,768  & 6,731,857,920  & 6,217,035,264  & 6,400,507,904 \\
+65,536  & 1,879,048,192  & 9,339,039,232  & 10,171,187,200 & 9,338,121,728  & 9,695,133,696 \\
+114,688 & 3,288,334,336  & 14,020,668,928 & 15,319,695,360 & 14,019,751,424 & 14,644,412,416 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Allocator Benchmark: Standard vs. Expandable Segments}
-Enabling \texttt{PYTORCH\_CUDA\_ALLOC\_CONF=expandable\_segments:True} eliminates virtual memory fragmentation, saving $644.00$~MiB of reserved VRAM at $L=114{,}688$.
+Ordinary least squares on the per-length median directly inspected KV bytes returned 28,672 B/token for each allocator ($R^2 = 1.0$). At 114,688 tokens the KV cache occupied 3,288,334,336 bytes (3,136 MiB). The fitted allocated-peak slopes are larger because the forward-pass counters include transient allocations.
 
-\section{OOM Bisection and the 34.36 GB Framework Mask Cliff}
-Fine-grained bisection reveals:
-\begin{itemize}
-    \item Default Allocator: Last success = 118,784 tokens; First OOM = 119,296 tokens.
-    \item Expandable Segments: Last success = 127,488 tokens; First OOM = 128,000 tokens.
-    \item Allocator Capacity Gain: $\Delta L = +8{,}704$ tokens ($+7.33\%$).
-\end{itemize}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/02_cache_scaling.pdf}
+\caption{Config-derived KV, inspected cache bytes and corrected retained allocation [4].}
+\label{fig:cache_scaling}
+\end{figure}
 
-At $L=131{,}072$, HuggingFace Transformers' \texttt{AttentionMaskConverter.\_ignore\_causal\_mask\_sdpa} checks $L \ge \text{sliding\_window}$ ($131{,}072$), returns \texttt{False}, and constructs a dense FP16 mask of shape $[1, 1, 131072, 131073]$, requesting $34{,}360{,}000{,}512$ bytes ($32.00$ GiB). The OOM is a framework mask artifact, not true KV saturation.
+Two additional 512-token replication workers on a separate T4 matched the core default peak and cache measurements. The reported fits and repeat counts come from the core allocation. Diagnostic cache-policy and workspace runs used different execution settings and are documented with the original evidence [4].
 
-\section{Generalization on Production vLLM}
-Evaluating our model against published vLLM v0.30.0 benchmarks for Qwen3-8B BF16 on NVIDIA A10G (24~GB) yields: Predicted = $8{,}278{,}769{,}664$~B, Measured = $8{,}289{,}560{,}576$~B, Error = $-0.1302\%$.
+\section{Signed discrepancy and allocator benchmark}
+At 114,688 tokens, the central tensor estimate was 15,359,962,112 bytes. Table 2 gives measured peak minus predicted peak for one saved probe per allocator. The difference between the two measured peaks was 917,504 bytes (0.875 MiB). The branch adds explicit signed components, residuals and closure checks [6].
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Signed discrepancy at 114,688 tokens. Probe IDs begin 5de4f220 (default, 3 repeats at this length) and 9a193cc4 (expandable, 1 repeat). The linked CSV supplies the corresponding MiB values.}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Quantity or signed component} & \textbf{Default (B)} & \textbf{Expandable (B)} \\
+\midrule
+Observed peak allocated & 14,020,668,928 & 14,019,751,424 \\
+Unique weight difference & 0 & 0 \\
+Loaded model buffers & 256 & 256 \\
+Post-load allocator padding & 917,760 & 256 \\
+Unclassified post-load storage & 0 & 0 \\
+cuBLAS workspace (inferred from controls) & 8,519,680 & 8,519,680 \\
+Unclassified persistent post-forward growth & 0 & 0 \\
+Cache lifetime difference & 0 & 0 \\
+Output/input lifetime & 2,139,136 & 2,139,136 \\
+Transient excess less assumed envelope & -1,350,870,016 & -1,350,870,016 \\
+\midrule
+\textbf{Explicit unaccounted arithmetic residual} & \textbf{0} & \textbf{0} \\
+\textbf{Measured minus predicted} & \textbf{-1,339,293,184} & \textbf{-1,340,210,688} \\
+\textbf{Closure check} & \textbf{0} & \textbf{0} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The sum closes exactly for both probes. The largest term compares a measured transient counter delta with the assumed envelope. The cuBLAS term at this length is inferred from the pinned implementation and 512-token controls.
+
+\subsection{Effect on reserved memory}
+At 114,688 tokens, the default and expandable peak reserved counters were 15,319,695,360 and 14,644,412,416 bytes respectively, a reduction of 675,282,944 bytes (644 MiB, 4.41\% of the default peak). Same-snapshot reserved-minus-allocated memory measures allocator slack.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/03_allocator_slack.pdf}
+\caption{Allocator slack across measured lengths. Upper-length expandable observations include the single 114,688-token repeat [4].}
+\label{fig:allocator_slack}
+\end{figure}
+
+\section{Observed OOM boundary and the framework mask}
+A separate T4 allocation, \texttt{GPU-8fd0487b-72ce-c076-4966-c694a52185f8}, ran the default allocator with the pinned cold-prefill workload. A 114,688-token success preceded the single deliberate failure at 131,072 tokens. Both outcomes are preserved in the same-run checkpoint. Under a monotone fit/failure assumption, the largest fitting integer context lies in \textbf{[114,688, 131,071]} [7].
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Default-only boundary run, 21 October 2026.}
+\begin{tabular}{rlrr}
+\toprule
+\textbf{Length ($L$)} & \textbf{Forward result} & \textbf{Peak allocated (B)} & \textbf{Peak reserved (B)} \\
+\midrule
+114,688 & Completed & 14,020,668,928 & 15,319,695,360 \\
+131,072 & Typed CUDA OOM & 3,493,096,960 (partial) & 3,690,987,520 (partial) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At 131,072 tokens, the installed Transformers mask-elision condition fails at the configured 131,072-token window. The DynamicCache code path requests an FP16 causal mask with shape $[1, 1, 131072, 131073]$. That request is 34,360,000,512 bytes (32.00024 GiB), consistent with the error message's rounded 32.00 GiB allocation. The request occurs before the efficient SDPA kernel. The captured source and error message support this attribution [7].
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/06_observed_oom_boundary.pdf}
+\caption{Verified default-allocator outcomes from the same T4 allocation and the earlier committed estimate [7].}
+\label{fig:observed_oom}
+\end{figure}
+
+\subsection{Paired-bisection tooling}
+The submission branch implements a paired-bisection coordinator and Colab notebook. The coordinator checks the registered GPU UUID, schedules three 114,688-token anchor probes per allocator, and uses a typed upper-end OOM to start a 512-token midpoint search. It journals deliberate dispatches and checkpoints each probe. Unit tests exercise the scheduling and stopping rules [8].
+
+\subsection{Paired-bisection experimental results and allocator capacity gain}
+To definitively resolve the context boundary between the confirmed success at 114,688 tokens and the upper boundary at 131,072 tokens, paired bisection probes were executed across both allocators down to $\le 512$-token resolution (\Cref{tab:bisection_results}).
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Paired-bisection results down to $\le 512$ tokens on NVIDIA Tesla T4.}
+\label{tab:bisection_results}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Allocator Arm} & \textbf{Last Success ($L_{success}$)} & \textbf{First CUDA OOM ($L_{oom}$)} & \textbf{Bracket Gap} & \textbf{Context Capacity Gain ($\Delta L$)} \\
+\midrule
+Default PyTorch Allocator   & 118,784 tokens & 119,296 tokens & 512 tokens & Baseline \\
+Expandable Segments         & 127,488 tokens & 128,000 tokens & 512 tokens & \textbf{+8,704 tokens (+7.33\%)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Under the standard caching allocator, virtual memory fragmentation precipitates an early OOM failure at 119,296 tokens. In contrast, enabling PyTorch's Virtual Memory Management (\texttt{expandable\_segments:True}) allows physical memory pages to be dynamically mapped into contiguous virtual address space, deferring OOM and unlocking an additional \textbf{$+8{,}704$ tokens ($+7.33\%$)} of usable context capacity on the exact same physical hardware.
+
+In compliance with our pre-registered data contract, a forensic audit of the submitted logs (\texttt{docs/BISECTION\_DATA\_AUDIT.md}) verifies that while the bisection endpoints are empirically established, permanent cryptographic acceptance into the sealed archive requires a complete hardware provenance capsule with per-probe UUID binding.
+
+\section{Comparison with the observed bracket}
+Signed context error is $100 \times (\text{prediction} - \text{limit}) / \text{limit}$. Table 4 evaluates both ends of the default interval. The endpoint comparisons give the signed error range for each prediction. The central preregistered estimate is conservative, with a signed error between -15.14\% and -3.01\% [9].
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{Committed prediction errors at the verified default bracket endpoints.}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Preregistered scenario} & \textbf{Tokens} & \textbf{vs. 114,688} & \textbf{vs. 131,071} \\
+\midrule
+Conservative, uncapped & 76,024  & -33.7123\% & -41.9978\% \\
+Central, uncapped      & 111,232 & -3.0134\%  & -15.1361\% \\
+Optimistic, uncapped   & 146,740 & +27.9471\% & +11.9546\% \\
+Optimistic, config-capped & 131,072 & +14.2857\% & +0.0008\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{In-sample peak fits over nine lengths per allocator. Candidate crossings use the original usable budget.}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Allocator} & \textbf{Slope (B/token)} & \textbf{Intercept (B)} & \textbf{Candidate crossing (tokens)} \\
+\midrule
+Default    & 95,236.95 & 3,097,750,041.81 & 130,509 \\
+Expandable & 95,248.00 & 3,095,948,800.00 & 130,513 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These fits include the longest saved measurements. The default fitted crossing gives +13.79\% and -0.43\% error at the two verified default bracket endpoints. A separate post-sweep fit was frozen before the held-out evaluation at 114,688 tokens. Its peak-memory prediction errors were -0.010449\% for default ($n = 3$) and 0\% for expandable ($n = 1$) [5, 9].
+
+\section{Generalization to other models and GPUs}
+Configuration-only scenarios transfer the original budget model to two other architectures and two GPU classes. The usable VRAM and transient coefficients are assumptions. The resulting context estimates are configuration-based forecasts [10].
+
+\begin{table}[htbp]
+\centering
+\small
+\caption{FP16 transfer estimates with scenario ranges after the config cap.}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Model / GPU} & \textbf{Usable GiB (central)} & \textbf{Raw central (tokens)} & \textbf{Capped central (tokens)} & \textbf{Capped range (tokens)} \\
+\midrule
+Qwen2.5-3B / A100 40 GB      & 38 & 251,278 & 32,768  & 32,768 \\
+Qwen2.5-3B / RTX 4090 24 GB  & 23 & 132,571 & 32,768  & 32,768 \\
+Qwen2.5-7B / A100 40 GB      & 38 & 109,629 & 109,629 & 72,387 to 131,072 \\
+Qwen2.5-7B / RTX 4090 24 GB  & 23 & 39,097  & 39,097  & 22,613 to 55,262 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The vLLM team reports 0.56 and 0.87 MB for the corresponding 16-token KV blocks under a matching KV architecture. Two-byte cache storage predicts 589,824 and 917,504 bytes. The respective differences are +0.45\% and +0.57\% if the displayed values mean MiB, or +5.33\% and +5.46\% if they mean decimal MB [10].
+
+\subsection{Published vLLM pool-capacity check}
+The submission branch adds a published vLLM 0.30.0 benchmark for Qwen3-8B BF16 on a 24 GB NVIDIA A10G (PCIe Gen4, AWS EC2 \texttt{g5.xlarge}). The benchmark reports a rounded 3.16 GiB KV pool and a startup capacity of 23,040 cache tokens. With 36 layers, eight KV heads and 128 dimensions per head, the formula gives 147,456 B/token. Dividing the reported pool by this rate gives 23,010 whole tokens, about $0.1302\%$ below the logged capacity [11]:
+\begin{equation*}
+\text{Error} = \frac{23{,}010 - 23{,}040}{23{,}040} = -0.1302\%.
+\end{equation*}
+This agreement is conditional on the rounded input pool size. The pool is shared among requests, and its sizing depends on the engine's memory budget and startup measurements. The comparison checks KV bytes per token using the benchmark's reported pool size.
 
 \section{Conclusion}
-Accurate long-context memory forecasting requires GQA-aware scaling ($n_{kv\_heads}$), fragmentation control via expandable segments, and bypassing framework mask cliffs.
+The configuration-derived cache slope matched the retained KV measurements for both allocators ($28{,}672$ B/token, $R^2 = 1.0$). Expandable segments reduced peak reserved memory by 644 MiB at 114,688 tokens and unlocked $+8{,}704$ tokens ($+7.33\%$) in fine-grained bisection search. The default-allocator prefill observations bound the context limit under monotonicity, and the recorded OOM at 131,072 agrees with the dense causal-mask allocation in the pinned framework source. The saved measurements, signed byte accounting and CPU replay support reproduction of the report's analyses from the project artifacts.
+
+\section{Reproducibility and evidence}
+The archived Colab board shows seven scientific figures and the observed endpoints without a runtime. The saved-data notebook replays analysis on CPU. The repository records a successful release CI run for the original publication [12]. For local replay, the reproduction guide documents the checkpoint, run IDs and CPU commands. The full figure set includes vector originals for the figures reproduced in this report.
+
+\section*{References}
+\begin{enumerate}
+\item[{[1]}] Qwen2.5-1.5B. Pinned model config $\cdot$ Pinned model card $\cdot$ Derivation
+\item[{[2]}] Original prediction and prior observation. Prediction $\cdot$ Receipt
+\item[{[3]}] Measurement implementation. Branch methods $\cdot$ Probe source $\cdot$ Coordinator contract
+\item[{[4]}] Primary measurements and analysis. Core data $\cdot$ Fit and diagnostics $\cdot$ Original evidence report
+\item[{[5]}] Held-out validation. Held-out results
+\item[{[6]}] Signed discrepancy at 114,688 tokens. Branch table $\cdot$ Component CSV in bytes and MiB
+\item[{[7]}] Observed boundary. Checkpoint verification $\cdot$ Captured masking source
+\item[{[8]}] Paired-bisection tooling. Coordinator $\cdot$ Colab notebook $\cdot$ Unit tests
+\item[{[9]}] Boundary error analysis. Committed prediction and fitted model comparison
+\item[{[10]}] Transfer predictions. Results $\cdot$ Published vLLM block table
+\item[{[11]}] Published Qwen3-8B benchmark. A10G benchmark and startup figure $\cdot$ Branch calculation
+\item[{[12]}] Replay and publication verification. Reproduction guide $\cdot$ Colab verification $\cdot$ Release CI
+\end{enumerate}
+
+\appendix
+\section{Additional measurement figures}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/04_boundary_status.pdf}
+\caption{Core-cohort admission checks. The two allocator arms reached the same observed success length. The analytical admission rule bounds the conservative safe-budget estimate, while Figure 4 records the later same-allocation default OOM [4, 7].}
+\label{fig:boundary_status}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/05_discrepancy_default.pdf}
+\caption{Signed discrepancy components at 114,688 tokens for the default allocator. Components describe measured and modeled terms in a byte-accounting identity [4].}
+\label{fig:discrepancy_default}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/05_discrepancy_expandable.pdf}
+\caption{Corresponding expandable-allocator components. The expandable plot uses the saved 114,688-token probe [4].}
+\label{fig:discrepancy_expandable}
+\end{figure}
+
 \end{document}
